@@ -72,8 +72,8 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
 
   const openDetail = (e: Event) => {
     e.stopPropagation()
-    const base = window.location.pathname.replace(/\/[^/]*$/, "")
-    window.open(`${base}#/detail/${props.run.run_id}`, "_blank")
+    const url = `${window.location.origin}${window.location.pathname}#/detail/${props.run.run_id}`
+    window.open(url, "_blank")
   }
 
   return (

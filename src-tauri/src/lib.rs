@@ -66,6 +66,25 @@ async fn backend_status(state: tauri::State<'_, BackendHandle>) -> Result<bool, 
     Ok(TcpStream::connect("127.0.0.1:8765").is_ok())
 }
 
+#[tauri::command]
+fn minimize_window(window: tauri::WebviewWindow) {
+    let _ = window.minimize();
+}
+
+#[tauri::command]
+fn toggle_maximize_window(window: tauri::WebviewWindow) {
+    if window.is_maximized().unwrap_or(false) {
+        let _ = window.unmaximize();
+    } else {
+        let _ = window.maximize();
+    }
+}
+
+#[tauri::command]
+fn close_window(window: tauri::WebviewWindow) {
+    let _ = window.close();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -118,7 +137,12 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![backend_status])
+        .invoke_handler(tauri::generate_handler![
+            backend_status,
+            minimize_window,
+            toggle_maximize_window,
+            close_window
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 

@@ -1,30 +1,60 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #1a1a1a;
-  --color-surface: #242424;
-  --color-card: #2d2d2d;
-  --color-border: #333333;
-  --color-muted: #404040;
-  --color-fg: #f0f0f0;
-  --color-fg-muted: #888888;
-  --color-accent: #c9956c;
-  --color-accent-hover: #dbad7e;
-  --color-success: #22c55e;
-  --color-danger: #ef4444;
-  --color-danger-hover: #dc2626;
-  --color-input: #2d2d2d;
-  --color-accent-muted: #b09070;
+  --color-bg: #000000;
+  --color-surface: #0a0a0a;
+  --color-card: #141414;
+  --color-border: #c9a96133;
+  --color-fg: #ffffff;
+  --color-fg-muted: #a0a0a0;
+  --color-accent: #c9a961;
+  --color-accent-hover: #e8d49a;
+  --color-success: #2ecc71;
+  --color-danger: #e74c3c;
+  --color-danger-hover: #c0392b;
+  --color-input: #1a1a1a;
+  --color-accent-muted: #8b7340;
 }
 
 :root {
-  font-family: 'Cascadia Code', 'SF Mono', 'SF Mono', 'Consolas', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --color-bg: #000000;
+  --color-surface: #0a0a0a;
+  --color-card: #141414;
+  --color-border: #c9a96133;
+  --color-fg: #ffffff;
+  --color-fg-muted: #a0a0a0;
+  --color-gold: #c9a961;
+  --color-gold-light: #e8d49a;
+  --color-gold-dark: #8b7340;
+  --color-accent: #c9a961;
+  --color-accent-hover: #e8d49a;
+  --color-accent-light: #e8d49a;
+  --color-accent-dark: #8b7340;
+  --color-accent-muted: #8b7340;
+  --color-danger: #e74c3c;
+  --color-success: #2ecc71;
+  --color-ink-1: #444444;
+  --color-ink-2: #333333;
+  --color-ink-3: #1f1f1f;
 }
 
-body {
-  background-color: var(--color-bg);
+html, body, #root {
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
   color: var(--color-fg);
   font-size: 14px;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+
+[data-tauri-drag-region] button {
+  -webkit-app-region: no-drag;
 }
 
 ::-webkit-scrollbar {
@@ -43,5 +73,10 @@ body {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-accent);
+  background: var(--color-gold);
+}
+
+::selection {
+  background: var(--color-gold);
+  color: #000;
 }

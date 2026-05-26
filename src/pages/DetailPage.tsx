@@ -65,7 +65,7 @@ const RunDetail: Component<{ run: TestRun }> = props => {
   const accuracyOptions = (): any => ({
     chart: { type: "bar" as const, toolbar: { show: false }, background: "transparent", foreColor: "#a3a3a3" },
     plotOptions: { bar: { borderRadius: 6, columnWidth: "60%" } },
-    colors: run().results.map(r => (r.total > 0 && r.passed / r.total >= 0.95 ? "#e8eaf8" : r.total > 0 && r.passed / r.total >= 0.8 ? "#22c55e" : r.total > 0 && r.passed / r.total >= 0.6 ? "#eab308" : "#ef4444")),
+    colors: run().results.map(r => (r.total > 0 && r.passed / r.total >= 0.95 ? "#e8d49a" : r.total > 0 && r.passed / r.total >= 0.8 ? "#2ecc71" : r.total > 0 && r.passed / r.total >= 0.6 ? "#f39c12" : "#e74c3c")),
     theme: { mode: "dark" as const },
     xaxis: {
       categories: run().results.map(r => r.model_id),
@@ -87,7 +87,7 @@ const RunDetail: Component<{ run: TestRun }> = props => {
   const elapsedOptions = (): any => ({
     chart: { type: "bar" as const, toolbar: { show: false }, background: "transparent", foreColor: "#a3a3a3" },
     plotOptions: { bar: { borderRadius: 6, horizontal: true, barHeight: "60%" } },
-    colors: ["#c9a36c"],
+    colors: ["#c9a961"],
     theme: { mode: "dark" as const },
     xaxis: { labels: { formatter: (v: number) => `${v}s` } },
     yaxis: {
