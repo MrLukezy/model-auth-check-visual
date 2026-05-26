@@ -1,0 +1,12 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.log
+.DS_Store
+Thumbs.db
+backend/data.json
+backend/__pycache__/
+*.pyc
+src/**/*.js
+src/**/*.jsx
