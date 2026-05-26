@@ -6,6 +6,7 @@ src-tauri/gen/
 .DS_Store
 Thumbs.db
 backend/data.json
+backend/results.json
 backend/__pycache__/
 *.pyc
 src/**/*.js
