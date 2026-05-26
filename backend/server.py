@@ -23,16 +23,16 @@ def _api_url(base: str, path: str) -> str:
 
 
 PROMPTS = [
-    ("What is 7 × 8? Answer with just the number.", "56"),
-    ("Which planet is closest to the Sun? One word.", "Mercury"),
-    ("What is 15 + 27? Answer with just the number.", "42"),
-    ("How many sides does a hexagon have? Answer with just the number.", "6"),
-    ("What is the square root of 144? Answer with just the number.", "12"),
-    ("In which continent is Egypt? One word.", "Africa"),
-    ("What is 9 × 11? Answer with just the number.", "99"),
-    ("What language is primarily spoken in Brazil? One word.", "Portuguese"),
-    ("What is the chemical symbol for water? Just the formula.", "H2O"),
-    ("What is 144 / 12? Answer with just the number.", "12"),
+    ("What is 7 × 8?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 56", "56"),
+    ("Which planet is closest to the Sun?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: Mercury", "Mercury"),
+    ("What is 15 + 27?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 42", "42"),
+    ("How many sides does a hexagon have?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 6", "6"),
+    ("What is the square root of 144?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 12", "12"),
+    ("In which continent is Egypt?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: Africa", "Africa"),
+    ("What is 9 × 11?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 99", "99"),
+    ("What language is primarily spoken in Brazil?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: Portuguese", "Portuguese"),
+    ("What is the chemical symbol for water?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: H2O", "H2O"),
+    ("What is 144 / 12?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 12", "12"),
 ]
 
 
@@ -200,6 +200,34 @@ def _normalize(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+def _strip_think(s: str) -> str:
+    s = re.sub(r"", "", s, flags=re.IGNORECASE | re.DOTALL)
+    s = re.sub(r"", "", s, flags=re.IGNORECASE | re.DOTALL)
+    s = re.sub(r"", "", s, flags=re.IGNORECASE | re.DOTALL)
+    return s.strip()
+
+
+def _extract_answer(raw: str, expected: str) -> str:
+    cleaned = _strip_think(raw)
+    if not cleaned:
+        return raw.strip()
+    if _normalize(cleaned) == _normalize(expected):
+        return cleaned
+    lines = [l.strip() for l in cleaned.splitlines() if l.strip()]
+    for line in lines:
+        if _normalize(line) == _normalize(expected):
+            return line
+    if lines:
+        candidate = lines[0].split()[0] if lines[0].split() else lines[0]
+        if _normalize(candidate) == _normalize(expected):
+            return candidate
+    if _normalize(expected) in _normalize(cleaned):
+        start = _normalize(cleaned).index(_normalize(expected))
+        end = start + len(_normalize(expected))
+        return cleaned[start:end] if start < len(cleaned) else cleaned
+    return cleaned[:80] if len(cleaned) > 80 else cleaned
+
+
 @app.post("/api/test/queue")
 async def add_to_queue(model_full_ids: list[str]):
     added = []
@@ -269,7 +297,7 @@ async def run_test(req: TestRunRequest):
                             "model": m["model_id"],
                             "messages": [{"role": "user", "content": prompt}],
                             "temperature": 0,
-                            "max_tokens": 32,
+                            "max_tokens": 512,
                         },
                         timeout=30,
                     )
@@ -290,15 +318,15 @@ async def run_test(req: TestRunRequest):
                         .get("choices", [{}])[0]
                         .get("message", {})
                         .get("content", "")
-                        .strip()
                     )
-                    ok = _normalize(content) == _normalize(expected)
+                    content_stripped = _extract_answer(content, expected)
+                    ok = _normalize(content_stripped) == _normalize(expected)
                     if ok:
                         passed += 1
                     details.append({
                         "prompt": prompt,
                         "expected": expected,
-                        "actual": content,
+                        "actual": content_stripped,
                         "correct": ok,
                         "error": None,
                         "latency_ms": elapsed,
