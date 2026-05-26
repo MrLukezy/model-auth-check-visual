@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import csv
+import json
 import random
 import re
 import time
@@ -11,7 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -367,129 +370,236 @@ async def run_test(req: TestRunRequest):
         raise HTTPException(500, "No questions sampled from the bank")
 
     run_id = str(uuid.uuid4())[:8]
-    run_results: list[dict] = []
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        for m in targets:
-            prov = providers.get(m["provider_id"])
-            if not prov:
-                run_results.append({
-                    "model_id": m["model_id"],
-                    "provider_name": "unknown",
-                    "error": "Provider not found",
-                    "passed": 0,
-                    "total": 0,
-                    "avg_latency_ms": 0,
-                    "details": [],
-                    "categories": {},
-                })
-                continue
+    # Start streaming test run
+    return StreamingResponse(
+        _run_test_stream(run_id, targets, sampled, cat_stats, req.num_tests, req.profile, seed),
+        media_type="text/event-stream",
+    )
 
-            url = _api_url(prov["base_url"], "/v1/chat/completions")
-            headers = {
-                "Authorization": f"Bearer {prov['api_key']}",
-                "Content-Type": "application/json",
-            }
-            passed = 0
-            total = len(sampled)
-            details: list[dict] = []
-            cat_passed: dict[str, int] = defaultdict(int)
-            cat_total: dict[str, int] = defaultdict(int)
 
-            for q in sampled:
-                prompt = SYSTEM_PROMPT + q["question"].strip()
-                expected = q["answer"].strip()
-                category = q.get("category", "common_science")
-                cat_total[category] += 1
+async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict],
+                          cat_stats: dict[str, int], num_tests: int, profile: str, seed: int):
+    global_semaphore = asyncio.Semaphore(100)
+    progress_queue: asyncio.Queue = asyncio.Queue()
+    results: dict[str, dict] = {}
 
-                start = time.perf_counter()
-                try:
-                    r = await client.post(
-                        url,
-                        headers=headers,
-                        json={
-                            "model": m["model_id"],
-                            "messages": [{"role": "user", "content": prompt}],
-                            "temperature": 0,
-                            "max_tokens": 512,
-                        },
-                        timeout=30,
-                    )
-                    elapsed = (time.perf_counter() - start) * 1000
-                    if r.status_code != 200:
-                        details.append({
-                            "prompt": q["question"][:120],
-                            "expected": expected,
-                            "actual": None,
-                            "correct": False,
-                            "error": f"HTTP {r.status_code}",
-                            "latency_ms": elapsed,
-                            "category": category,
-                        })
-                        continue
+    # Calculate per-model concurrency based on total models
+    per_model_limit = min(5, max(1, 100 // len(targets)))
 
-                    content = (
-                        r.json()
-                        .get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                    )
-                    content_stripped = _extract_answer(content, expected)
-                    ok = _normalize(content_stripped) == _normalize(expected)
-                    if ok:
-                        passed += 1
-                        cat_passed[category] += 1
-                    details.append({
-                        "prompt": q["question"][:120],
-                        "expected": expected,
-                        "actual": content_stripped,
-                        "correct": ok,
-                        "error": None,
-                        "latency_ms": elapsed,
-                        "category": category,
-                    })
-                except httpx.HTTPError as e:
-                    elapsed = (time.perf_counter() - start) * 1000
-                    details.append({
-                        "prompt": q["question"][:120],
+    async def test_single_question(client: httpx.AsyncClient, model_info: dict,
+                                   provider: dict, question: dict) -> dict:
+        model_id = model_info["model_id"]
+        url = _api_url(provider["base_url"], "/v1/chat/completions")
+        headers = {
+            "Authorization": f"Bearer {provider['api_key']}",
+            "Content-Type": "application/json",
+        }
+
+        prompt = SYSTEM_PROMPT + question["question"].strip()
+        expected = question["answer"].strip()
+        category = question.get("category", "common_science")
+
+        async with global_semaphore:
+            start = time.perf_counter()
+            try:
+                r = await client.post(
+                    url,
+                    headers=headers,
+                    json={
+                        "model": model_id,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0,
+                        "max_tokens": 512,
+                    },
+                    timeout=30,
+                )
+                elapsed = (time.perf_counter() - start) * 1000
+
+                if r.status_code != 200:
+                    return {
+                        "prompt": question["question"][:120],
                         "expected": expected,
                         "actual": None,
                         "correct": False,
-                        "error": str(e),
+                        "error": f"HTTP {r.status_code}",
                         "latency_ms": elapsed,
                         "category": category,
-                    })
+                    }
 
-            run_results.append({
-                "model_id": m["model_id"],
-                "provider_name": m.get("provider_name", prov["name"]),
+                content = (
+                    r.json()
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
+                content_stripped = _extract_answer(content, expected)
+                ok = _normalize(content_stripped) == _normalize(expected)
+                return {
+                    "prompt": question["question"][:120],
+                    "expected": expected,
+                    "actual": content_stripped,
+                    "correct": ok,
+                    "error": None,
+                    "latency_ms": elapsed,
+                    "category": category,
+                }
+            except httpx.HTTPError as e:
+                elapsed = (time.perf_counter() - start) * 1000
+                return {
+                    "prompt": question["question"][:120],
+                    "expected": expected,
+                    "actual": None,
+                    "correct": False,
+                    "error": str(e),
+                    "latency_ms": elapsed,
+                    "category": category,
+                }
+
+    async def test_model_worker(model_info: dict, model_semaphore: asyncio.Semaphore):
+        model_id = model_info["model_id"]
+        provider_id = model_info.get("provider_id")
+        provider = providers.get(provider_id)
+        worker_start_time = time.perf_counter()
+
+        if not provider:
+            result = {
+                "model_id": model_id,
+                "provider_name": "unknown",
+                "error": "Provider not found",
+                "passed": 0,
+                "total": len(sampled),
+                "avg_latency_ms": 0,
+                "elapsed_ms": 0,
+                "details": [],
+                "categories": {},
+                "completed": 0,
+            }
+            results[model_id] = result
+            await progress_queue.put({"type": "model_complete", "model_id": model_id, "result": result})
+            return
+
+        await progress_queue.put({"type": "model_start", "model_id": model_id})
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            # Process questions in batches
+            batch_size = 5
+            all_details: list[dict] = []
+            cat_passed: dict[str, int] = defaultdict(int)
+            cat_total: dict[str, int] = defaultdict(int)
+            passed = 0
+            completed = 0
+
+            for i in range(0, len(sampled), batch_size):
+                batch = sampled[i:i + batch_size]
+                tasks = []
+                for q in batch:
+                    # Respect per-model semaphore
+                    async def wrapped_task(q_item=q):
+                        async with model_semaphore:
+                            return await test_single_question(client, model_info, provider, q_item)
+                    tasks.append(wrapped_task())
+
+                batch_results = await asyncio.gather(*tasks)
+                for detail in batch_results:
+                    all_details.append(detail)
+                    cat = detail.get("category", "common_science")
+                    cat_total[cat] += 1
+                    if detail.get("correct"):
+                        passed += 1
+                        cat_passed[cat] += 1
+                    completed += 1
+
+                # Send progress update
+                await progress_queue.put({
+                    "type": "model_progress",
+                    "model_id": model_id,
+                    "completed": completed,
+                    "total": len(sampled),
+                    "passed": passed,
+                })
+
+            # Calculate final stats
+            avg_latency = (
+                sum(d["latency_ms"] for d in all_details) / len(all_details)
+                if all_details else 0
+            )
+            worker_elapsed_ms = (time.perf_counter() - worker_start_time) * 1000
+
+            result = {
+                "model_id": model_id,
+                "provider_name": model_info.get("provider_name", provider.get("name", "unknown")),
                 "passed": passed,
-                "total": total,
-                "avg_latency_ms": (
-                    sum(d["latency_ms"] for d in details) / total if total else 0
-                ),
-                "details": details,
-                "error": None,
+                "total": len(sampled),
+                "avg_latency_ms": avg_latency,
+                "elapsed_ms": worker_elapsed_ms,
+                "details": all_details,
                 "categories": {
                     cat: {"passed": cat_passed.get(cat, 0), "total": cat_total.get(cat, 0)}
                     for cat in cat_total
                 },
-            })
+                "error": None,
+                "completed": completed,
+            }
+            results[model_id] = result
+            await progress_queue.put({"type": "model_complete", "model_id": model_id, "result": result})
 
-    result = {
+    # Create per-model semaphores
+    model_tasks = []
+    for target in targets:
+        model_sem = asyncio.Semaphore(per_model_limit)
+        task = asyncio.create_task(test_model_worker(target, model_sem))
+        model_tasks.append(task)
+
+    # Stream progress updates
+    await progress_queue.put({
+        "type": "run_start",
+        "run_id": run_id,
+        "total_models": len(targets),
+        "num_tests": num_tests,
+        "profile": profile,
+        "seed": seed,
+        "category_sampled": cat_stats,
+    })
+
+    completed_models = 0
+    while completed_models < len(targets):
+        try:
+            msg = await asyncio.wait_for(progress_queue.get(), timeout=0.1)
+            yield f"data: {json.dumps(msg)}\n\n"
+
+            if msg["type"] == "model_complete":
+                completed_models += 1
+        except asyncio.TimeoutError:
+            # Send heartbeat to keep connection alive
+            yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+
+    # Wait for all tasks to complete
+    await asyncio.gather(*model_tasks)
+
+    # Build final result
+    run_results = [results[t["model_id"]] for t in targets if t["model_id"] in results]
+
+    final_result = {
         "run_id": run_id,
         "timestamp": datetime.now().isoformat(),
         "results": run_results,
         "total_models": len(targets),
         "total_passed": sum(r["passed"] for r in run_results),
         "total_questions": sum(r["total"] for r in run_results),
-        "seed": seed,
-        "profile": req.profile,
-        "num_tests": req.num_tests,
         "category_sampled": cat_stats,
+        "num_tests": num_tests,
+        "profile": profile,
+        "seed": seed,
+        "completed": True,
     }
-    test_results.insert(0, result)
-    return result
+
+    # Store in history
+    test_results.insert(0, final_result)
+    if len(test_results) > 10:
+        test_results.pop()
+
+    yield f"data: {json.dumps({'type': 'run_complete', 'result': final_result})}\n\n"
 
 
 @app.get("/api/test/results")

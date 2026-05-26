@@ -34,6 +34,7 @@ export interface ModelResult {
   passed: number
   total: number
   avg_latency_ms: number
+  elapsed_ms?: number
   details: PromptResult[]
   error: string | null
   categories?: Record<string, CategoryStats>

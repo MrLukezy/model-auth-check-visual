@@ -1,5 +1,6 @@
-import { Component, createSignal, onMount, For, Show } from "solid-js"
+import { Component, createSignal, onMount, For, Show, Index } from "solid-js"
 import { api, Model, TestRun, BankStats } from "../api"
+import "./score-colors.css"
 
 const PROFILES_LIST = [
   { value: "programmer", label: "Programmer", desc: "CS25%+Math20%+Logic20%+Game15%+Safety10%+Common10%" },
@@ -20,6 +21,41 @@ const CAT_LABELS: Record<string, string> = {
   language_logic: "Language",
 }
 
+function scoreColor(passed: number, total: number): string {
+  if (total === 0) return "score-yellow"
+  const pct = (passed / total) * 100
+  if (pct >= 95) return "score-gold"
+  if (pct >= 80) return "score-green"
+  if (pct >= 60) return "score-yellow"
+  return "score-red"
+}
+
+function scoreBgColor(passed: number, total: number): string {
+  if (total === 0) return "score-bg-yellow"
+  const pct = (passed / total) * 100
+  if (pct >= 95) return "score-bg-gold"
+  if (pct >= 80) return "score-bg-green"
+  if (pct >= 60) return "score-bg-yellow"
+  return "score-bg-red"
+}
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  return `${Math.floor(s / 60)}m ${s % 60}s`
+}
+
+interface ModelProgress {
+  model_id: string
+  started: boolean
+  done: boolean
+  completed: number
+  passed: number
+  total: number
+  elapsedMs?: number
+}
+
 const TestsPage: Component = () => {
   const [queue, setQueue] = createSignal<Model[]>([])
   const [running, setRunning] = createSignal(false)
@@ -29,6 +65,9 @@ const TestsPage: Component = () => {
   const [profile, setProfile] = createSignal("programmer")
   const [activeRun, setActiveRun] = createSignal<TestRun | null>(null)
   const [bankStats, setBankStats] = createSignal<BankStats | null>(null)
+  const [progress, setProgress] = createSignal<Record<string, ModelProgress>>({})
+  const [runStartTime, setRunStartTime] = createSignal<number | null>(null)
+  const [elapsed, setElapsed] = createSignal(0)
 
   const load = async () => {
     try {
@@ -48,14 +87,109 @@ const TestsPage: Component = () => {
     setRunning(true)
     setError(null)
     setActiveRun(null)
+
+    const initialProgress: Record<string, ModelProgress> = {}
+    for (const m of q) {
+      initialProgress[m.model_id] = {
+        model_id: m.model_id,
+        started: false,
+        done: false,
+        completed: 0,
+        passed: 0,
+        total: numTests(),
+      }
+    }
+    setProgress(initialProgress)
+    setRunStartTime(Date.now())
+    setElapsed(0)
+
+    const timer = setInterval(() => {
+      if (runStartTime()) {
+        setElapsed(Math.round((Date.now() - runStartTime()!) / 1000))
+      }
+    }, 1000)
+
     try {
-      const run = await api.runTest(q.map(m => m.id), numTests(), profile())
-      setActiveRun(run)
-      setResults([run, ...results()])
-      await load()
+      const body = JSON.stringify({
+        model_ids: q.map(m => m.id),
+        num_tests: numTests(),
+        profile: profile(),
+      })
+
+      const res = await fetch("http://localhost:8765/api/test/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      })
+
+      if (!res.ok || !res.body) {
+        const text = await res.text().catch(() => "")
+        throw new Error(text || `${res.status} ${res.statusText}`)
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        const lines = buffer.split("\n")
+        buffer = lines.pop() || ""
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue
+          const payload = line.slice(6).trim()
+          if (!payload) continue
+
+          try {
+            const msg = JSON.parse(payload)
+            if (msg.type === "model_start") {
+              setProgress(prev => ({
+                ...prev,
+                [msg.model_id]: {
+                  ...prev[msg.model_id],
+                  started: true,
+                },
+              }))
+            } else if (msg.type === "model_progress") {
+              setProgress(prev => ({
+                ...prev,
+                [msg.model_id]: {
+                  ...prev[msg.model_id],
+                  started: true,
+                  completed: msg.completed,
+                  passed: msg.passed,
+                  total: msg.total,
+                },
+              }))
+            } else if (msg.type === "model_complete") {
+              setProgress(prev => ({
+                ...prev,
+                [msg.model_id]: {
+                  ...prev[msg.model_id],
+                  done: true,
+                  completed: msg.result.total,
+                  passed: msg.result.passed,
+                  total: msg.result.total,
+                  elapsedMs: msg.result.elapsed_ms,
+                },
+              }))
+            } else if (msg.type === "run_complete") {
+              setActiveRun(msg.result)
+              setResults(prev => [msg.result, ...prev])
+            }
+          } catch {
+            // skip unparseable
+          }
+        }
+      }
     } catch (e) {
       setError(String(e))
     } finally {
+      clearInterval(timer)
       setRunning(false)
     }
   }
@@ -67,6 +201,11 @@ const TestsPage: Component = () => {
     } catch (e) {
       setError(String(e))
     }
+  }
+
+  const formatTime = (s: number) => {
+    if (s < 60) return `${s}s`
+    return `${Math.floor(s / 60)}m ${s % 60}s`
   }
 
   return (
@@ -154,15 +293,15 @@ const TestsPage: Component = () => {
           <div class="flex items-center justify-between">
             <div class="text-xs text-[var(--color-fg-muted)]">
               {running()
-                ? "Running..."
-                : `${numTests()} random questions × ${queue().length} model(s) — same questions for all models`}
+                ? `Running... ${formatTime(elapsed())}`
+                : `${numTests()} random questions × ${queue().length} model(s) — same questions for all models (parallel)`}
             </div>
             <button
               class="bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white font-medium text-sm px-6 py-2 rounded-lg transition disabled:opacity-50"
               disabled={running() || !bankStats()?.loaded}
               onClick={handleRun}
             >
-              {running() ? "Running tests..." : `Run Test`}
+              {running() ? `Running (${formatTime(elapsed())})...` : `Run Test`}
             </button>
           </div>
         </div>
@@ -170,6 +309,62 @@ const TestsPage: Component = () => {
 
       <Show when={error()}>
         <div class="text-[var(--color-danger)] text-sm mb-4">{error()}</div>
+      </Show>
+
+      {/* Live progress during run */}
+      <Show when={running()}>
+        <div class="bg-[var(--color-surface)] border border-[var(--color-accent)]/40 rounded-xl p-5 mb-6">
+          <div class="text-sm font-semibold text-[var(--color-accent)] mb-4">Live Progress</div>
+          <div class="flex flex-col gap-3">
+            <For each={Object.values(progress())}>
+              {p => (
+                <div class="flex flex-col gap-1.5">
+                  <div class="flex items-center justify-between text-xs">
+                    <div class="flex items-center gap-2">
+                      <span class="font-medium">{p.model_id}</span>
+                      <Show when={!p.started}>
+                        <span class="text-[var(--color-fg-muted)]">waiting...</span>
+                      </Show>
+                      <Show when={p.started && !p.done}>
+                        <span class="text-[var(--color-accent)] animate-pulse">testing...</span>
+                      </Show>
+                      <Show when={p.done}>
+                        <span class={scoreColor(p.passed, p.total)}>
+                          {p.passed}/{p.total}
+                        </span>
+                        <Show when={p.elapsedMs}>
+                          <span class="text-[var(--color-fg-muted)] ml-2">
+                            {formatElapsed(p.elapsedMs!)}
+                          </span>
+                        </Show>
+                      </Show>
+                    </div>
+                    <Show when={p.started}>
+                      <span class="text-[var(--color-fg-muted)] tabular-nums">
+                        {p.completed}/{p.total}
+                        {p.total > 0 && (
+                          <span class="ml-2">
+                            ({Math.round((p.completed / p.total) * 100)}%)
+                          </span>
+                        )}
+                      </span>
+                    </Show>
+                  </div>
+                  <div class="h-1.5 bg-[var(--color-bg)] rounded-full overflow-hidden">
+                    <div
+                      class={`h-full transition-all duration-300 ${
+                        p.done
+                          ? scoreBgColor(p.passed, p.total)
+                          : "bg-[var(--color-accent)]"
+                      }`}
+                      style={{ width: p.total > 0 ? `${(p.completed / p.total) * 100}%` : "0%" }}
+                    />
+                  </div>
+                </div>
+              )}
+            </For>
+          </div>
+        </div>
       </Show>
 
       {/* Active run */}
@@ -230,7 +425,7 @@ const RunCard: Component<{ run: TestRun; highlight?: boolean }> = props => {
           </Show>
         </div>
         <div class="text-sm">
-          <span class={pct() >= 50 ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"}>
+          <span class={scoreColor(props.run.total_passed, props.run.total_questions)}>
             {props.run.total_passed}/{props.run.total_questions}
           </span>
           <span class="text-[var(--color-fg-muted)] ml-1">({pct()}%)</span>
@@ -247,10 +442,15 @@ const RunCard: Component<{ run: TestRun; highlight?: boolean }> = props => {
                   <span class="text-[var(--color-fg-muted)] text-xs ml-2">{r.provider_name}</span>
                 </div>
                 <div class="flex items-center gap-4 text-xs">
+                  <Show when={r.elapsed_ms}>
+                    <span class="text-[var(--color-fg-muted)]">
+                      {formatElapsed(r.elapsed_ms!)}
+                    </span>
+                  </Show>
                   <span class="text-[var(--color-fg-muted)]">
                     {r.avg_latency_ms.toFixed(0)}ms avg
                   </span>
-                  <span class={r.passed === r.total ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"}>
+                  <span class={scoreColor(r.passed, r.total)}>
                     {r.passed}/{r.total}
                   </span>
                   <span class="text-[var(--color-fg-muted)]">{expanded() === r.model_id ? "▲" : "▼"}</span>
@@ -265,11 +465,7 @@ const RunCard: Component<{ run: TestRun; highlight?: boolean }> = props => {
                       <For each={Object.entries(r.categories || {})}>
                         {([cat, stats]) => (
                           <span
-                            class={`text-xs px-2 py-0.5 rounded ${
-                              stats.total > 0 && stats.passed / stats.total >= 0.5
-                                ? "bg-green-900/30 text-green-400"
-                                : "bg-red-900/30 text-red-400"
-                            }`}
+                            class={`text-xs px-2 py-0.5 rounded ${stats.total > 0 ? scoreColor(stats.passed, stats.total) : "text-[var(--color-fg-muted)]"}`}
                           >
                             {CAT_LABELS[cat] || cat}: {stats.passed}/{stats.total}
                           </span>
