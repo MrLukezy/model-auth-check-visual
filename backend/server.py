@@ -15,6 +15,13 @@ from pydantic import BaseModel
 
 DATA_PATH = Path(__file__).parent / "data.json"
 
+def _api_url(base: str, path: str) -> str:
+    base = base.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base + path
+
+
 PROMPTS = [
     ("What is 7 × 8? Answer with just the number.", "56"),
     ("Which planet is closest to the Sun? One word.", "Mercury"),
@@ -129,7 +136,7 @@ async def fetch_provider_models(pid: str):
 
     async with httpx.AsyncClient(timeout=30) as client:
         for path in ("/v1/models", "/v1/models/list", "/models"):
-            url = base + path if not base.endswith(path) else base
+            url = _api_url(base, path)
             try:
                 r = await client.get(url, headers=headers)
                 if r.status_code == 200:
@@ -243,7 +250,7 @@ async def run_test(req: TestRunRequest):
                 })
                 continue
 
-            url = prov["base_url"] + "/v1/chat/completions"
+            url = _api_url(prov["base_url"], "/v1/chat/completions")
             headers = {
                 "Authorization": f"Bearer {prov['api_key']}",
                 "Content-Type": "application/json",
