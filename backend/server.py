@@ -199,7 +199,7 @@ async def add_to_queue(model_full_ids: list[str]):
     for fid in model_full_ids:
         if fid not in models:
             continue
-        if any(q["full_id"] == fid for q in test_queue):
+        if any(q["id"] == fid for q in test_queue):
             continue
         test_queue.append(models[fid])
         added.append(fid)
@@ -215,7 +215,7 @@ async def get_queue():
 async def remove_from_queue(fid: str):
     global test_queue
     before = len(test_queue)
-    test_queue = [x for x in test_queue if x["full_id"] != fid]
+    test_queue = [x for x in test_queue if x["id"] != fid]
     return {"removed": before - len(test_queue), "queue_size": len(test_queue)}
 
 
