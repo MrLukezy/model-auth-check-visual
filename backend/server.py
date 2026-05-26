@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 DATA_PATH = Path(__file__).parent / "data.json"
+RESULTS_PATH = Path(__file__).parent / "results.json"
 QUESTION_BANK_PATH = Path(__file__).parent.parent.parent / "data" / "all_questions.csv"
 
 CATEGORIES_V2 = {
@@ -159,21 +160,41 @@ question_bank: dict[str, list[dict]] = {}
 def _load() -> None:
     global question_bank
     if DATA_PATH.exists():
-        import json as _json
         with open(DATA_PATH, encoding="utf-8") as f:
-            data = _json.load(f)
+            data = json.load(f)
         providers.clear()
         providers.update(data.get("providers", {}))
         models.clear()
         models.update(data.get("models", {}))
     question_bank = _load_question_bank()
+    _load_results()
 
 
 def _save() -> None:
-    import json as _json
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(DATA_PATH, "w", encoding="utf-8") as f:
-        _json.dump({"providers": providers, "models": models}, f, indent=2)
+        json.dump({"providers": providers, "models": models}, f, indent=2)
+
+
+def _load_results() -> None:
+    global test_results
+    if RESULTS_PATH.exists():
+        try:
+            with open(RESULTS_PATH, encoding="utf-8") as f:
+                test_results = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            test_results = []
+    else:
+        test_results = []
+
+
+def _save_results() -> None:
+    try:
+        RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(RESULTS_PATH, "w", encoding="utf-8") as f:
+            json.dump(test_results, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"[warn] failed to save results: {e}")
 
 
 @app.on_event("startup")
@@ -596,8 +617,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
 
     # Store in history
     test_results.insert(0, final_result)
-    if len(test_results) > 10:
-        test_results.pop()
+    _save_results()
 
     yield f"data: {json.dumps({'type': 'run_complete', 'result': final_result})}\n\n"
 

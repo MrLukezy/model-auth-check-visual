@@ -97,6 +97,7 @@ export const api = {
       body: JSON.stringify({ model_ids: ids, num_tests: numTests, profile, seed }),
     }),
   getResults: () => fetchJson<TestRun[]>("/api/test/results"),
+  getResultById: (runId: string) => fetchJson<TestRun>(`/api/test/results/${runId}`),
 }
 
 async function fetchJson<T>(path: string, opts: RequestInit = {}): Promise<T> {

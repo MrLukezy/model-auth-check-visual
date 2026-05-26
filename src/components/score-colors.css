@@ -1,0 +1,54 @@
+.score-red    { color: #ef4444; }
+.score-yellow { color: #eab308; }
+.score-green  { color: #22c55e; }
+.score-diamond {
+  color: #e8eaf8;
+  background: linear-gradient(
+    135deg,
+    #e8eaf8 0%,
+    #c9b6e4 25%,
+    #ffffff 50%,
+    #b5a3d9 75%,
+    #e8eaf8 100%
+  );
+  background-size: 200% 200%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: score-diamond-shimmer 3s ease-in-out infinite;
+  filter: drop-shadow(0 0 8px rgba(201, 182, 228, 0.7))
+          drop-shadow(0 0 16px rgba(181, 163, 217, 0.4));
+}
+
+@keyframes score-diamond-shimmer {
+  0%   { background-position: 0% 50%;   filter: drop-shadow(0 0 8px rgba(201, 182, 228, 0.6)) drop-shadow(0 0 16px rgba(181, 163, 217, 0.3)); }
+  50%  { background-position: 100% 50%; filter: drop-shadow(0 0 14px rgba(201, 182, 228, 1)) drop-shadow(0 0 24px rgba(167, 139, 217, 0.6)) drop-shadow(0 0 32px rgba(255, 255, 255, 0.4)); }
+  100% { background-position: 0% 50%;   filter: drop-shadow(0 0 8px rgba(201, 182, 228, 0.6)) drop-shadow(0 0 16px rgba(181, 163, 217, 0.3)); }
+}
+
+.score-bg-red    { background-color: #ef4444; }
+.score-bg-yellow { background-color: #eab308; }
+.score-bg-green  { background-color: #22c55e; }
+.score-bg-diamond {
+  background: linear-gradient(
+    135deg,
+    #e8eaf8 0%,
+    #c9b6e4 25%,
+    #ffffff 50%,
+    #b5a3d9 75%,
+    #e8eaf8 100%
+  );
+  background-size: 200% 200%;
+  animation: score-bg-diamond-pulse 3s ease-in-out infinite;
+  box-shadow: 0 0 16px rgba(201, 182, 228, 0.7),
+              0 0 24px rgba(181, 163, 217, 0.5),
+              inset 0 0 12px rgba(255, 255, 255, 0.3);
+}
+
+@keyframes score-bg-diamond-pulse {
+  0%   { background-position: 0% 50%;   box-shadow: 0 0 16px rgba(201, 182, 228, 0.7), 0 0 24px rgba(181, 163, 217, 0.5), inset 0 0 12px rgba(255, 255, 255, 0.3); }
+  50%  { background-position: 100% 50%; box-shadow: 0 0 24px rgba(201, 182, 228, 0.9), 0 0 36px rgba(167, 139, 217, 0.7), inset 0 0 16px rgba(255, 255, 255, 0.5); }
+  100% { background-position: 0% 50%;   box-shadow: 0 0 16px rgba(201, 182, 228, 0.7), 0 0 24px rgba(181, 163, 217, 0.5), inset 0 0 12px rgba(255, 255, 255, 0.3); }
+}
+
+.progress-diamond { animation: score-bg-diamond-pulse 3s ease-in-out infinite; }

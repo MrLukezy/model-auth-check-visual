@@ -1,56 +1,79 @@
 import { Component, createSignal, Show, For } from "solid-js"
+import { HashRouter, Route, useNavigate, useLocation } from "@solidjs/router"
 import ProvidersPage from "./pages/ProvidersPage"
 import ModelsPage from "./pages/ModelsPage"
 import TestsPage from "./pages/TestsPage"
+import RecordPage from "./pages/RecordPage"
+import DetailPage from "./pages/DetailPage"
 
-type Page = "providers" | "models" | "tests"
+type NavKey = "providers" | "models" | "tests" | "record"
 
-const NAV: { key: Page; label: string }[] = [
-  { key: "providers", label: "Providers" },
-  { key: "models", label: "Models" },
-  { key: "tests", label: "Tests" },
+const NAV: { key: NavKey; label: string; path: string }[] = [
+  { key: "providers", label: "Providers", path: "/providers" },
+  { key: "models", label: "Models", path: "/models" },
+  { key: "tests", label: "Tests", path: "/tests" },
+  { key: "record", label: "Record", path: "/record" },
 ]
 
 const App: Component = () => {
-  const [page, setPage] = createSignal<Page>("providers")
+  return (
+    <HashRouter root={Layout}>
+      <Route path="/providers" component={ProvidersPage} />
+      <Route path="/models" component={ModelsPage} />
+      <Route path="/tests" component={TestsPage} />
+      <Route path="/record" component={RecordPage} />
+      <Route path="/detail/:runId" component={DetailPage} />
+      <Route path="/" component={ProvidersPage} />
+    </HashRouter>
+  )
+}
+
+const Layout: Component<import("solid-js").ParentProps> = props => {
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  const activeKey = (): NavKey => {
+    const p = location.pathname
+    if (p.startsWith("/providers")) return "providers"
+    if (p.startsWith("/models")) return "models"
+    if (p.startsWith("/tests")) return "tests"
+    if (p.startsWith("/record")) return "record"
+    return "providers"
+  }
+
+  const isDetailPage = () => location.pathname.startsWith("/detail")
 
   return (
-    <div class="flex h-screen bg-[var(--color-bg)]">
-      <aside class="w-56 bg-[var(--color-surface)] border-r border-[var(--color-border)] flex flex-col shrink-0">
-        <div class="px-5 py-4 border-b border-[var(--color-border)] text-lg font-semibold text-[var(--color-accent)]">
-          Model Auth Check
-        </div>
-        <nav class="flex-1 p-3 flex flex-col gap-1">
-          <For each={NAV}>
-            {({ key, label }) => (
-              <button
-                class={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                  page() === key
-                    ? "bg-[var(--color-accent)] text-white shadow-sm"
-                    : "text-[var(--color-fg-muted)] hover:bg-[var(--color-card)] hover:text-[var(--color-fg)]"
-                }`}
-                onClick={() => setPage(key)}
-              >
-                {label}
-              </button>
-            )}
-          </For>
-        </nav>
-        <BackendStatus />
-      </aside>
+    <Show when={isDetailPage()} fallback={
+      <div class="flex h-screen bg-[var(--color-bg)]">
+        <aside class="w-56 bg-[var(--color-surface)] border-r border-[var(--color-border)] flex flex-col shrink-0">
+          <div class="px-5 py-4 border-b border-[var(--color-border)] text-lg font-semibold text-[var(--color-accent)]">
+            Model Auth Check
+          </div>
+          <nav class="flex-1 p-3 flex flex-col gap-1">
+            <For each={NAV}>
+              {item => (
+                <button
+                  class={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                    activeKey() === item.key
+                      ? "bg-[var(--color-accent)] text-white shadow-sm"
+                      : "text-[var(--color-fg-muted)] hover:bg-[var(--color-card)] hover:text-[var(--color-fg)]"
+                  }`}
+                  onClick={() => navigate(item.path)}
+                >
+                  {item.label}
+                </button>
+              )}
+            </For>
+          </nav>
+          <BackendStatus />
+        </aside>
 
-      <main class="flex-1 overflow-auto p-8">
-        <Show when={page() === "providers"}>
-          <ProvidersPage />
-        </Show>
-        <Show when={page() === "models"}>
-          <ModelsPage />
-        </Show>
-        <Show when={page() === "tests"}>
-          <TestsPage />
-        </Show>
-      </main>
-    </div>
+        <main class="flex-1 overflow-auto p-8">{props.children}</main>
+      </div>
+    }>
+      {props.children}
+    </Show>
   )
 }
 
