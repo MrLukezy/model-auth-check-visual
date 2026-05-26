@@ -20,6 +20,12 @@ export interface PromptResult {
   correct: boolean
   error: string | null
   latency_ms: number
+  category?: string
+}
+
+export interface CategoryStats {
+  passed: number
+  total: number
 }
 
 export interface ModelResult {
@@ -30,6 +36,7 @@ export interface ModelResult {
   avg_latency_ms: number
   details: PromptResult[]
   error: string | null
+  categories?: Record<string, CategoryStats>
 }
 
 export interface TestRun {
@@ -39,12 +46,23 @@ export interface TestRun {
   total_models: number
   total_passed: number
   total_questions: number
+  seed?: number
+  profile?: string
+  num_tests?: number
+  category_sampled?: Record<string, number>
+}
+
+export interface BankStats {
+  total: number
+  categories: Record<string, number>
+  loaded: boolean
+  profiles: Record<string, { desc: string; cats: string[] }>
 }
 
 const BASE = "http://localhost:8765"
 
 export const api = {
-  health: () => fetchJson<{ status: string }>("/api/health"),
+  health: () => fetchJson<{ status: string; bank_loaded: boolean; bank_size: number }>("/api/health"),
 
   listProviders: () => fetchJson<Provider[]>("/api/providers"),
   createProvider: (d: { name: string; base_url: string; api_key: string }) =>
@@ -70,10 +88,12 @@ export const api = {
   removeFromQueue: (id: string) =>
     fetchJson<void>(`/api/test/queue/${id}`, { method: "DELETE" }),
 
-  runTest: (ids: string[], numTests = 10) =>
+  getBankStats: () => fetchJson<BankStats>("/api/test/bank"),
+
+  runTest: (ids: string[], numTests: number, profile: string, seed?: number) =>
     fetchJson<TestRun>("/api/test/run", {
       method: "POST",
-      body: JSON.stringify({ model_ids: ids, num_tests: numTests }),
+      body: JSON.stringify({ model_ids: ids, num_tests: numTests, profile, seed }),
     }),
   getResults: () => fetchJson<TestRun[]>("/api/test/results"),
 }
@@ -83,7 +103,10 @@ async function fetchJson<T>(path: string, opts: RequestInit = {}): Promise<T> {
     headers: { "Content-Type": "application/json" },
     ...opts,
   })
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  if (!res.ok) {
+    const text = await res.text().catch(() => "")
+    throw new Error(text ? `${res.status} ${text}` : `${res.status} ${res.statusText}`)
+  }
   const text = await res.text()
   return text ? (JSON.parse(text) as T) : (undefined as T)
 }

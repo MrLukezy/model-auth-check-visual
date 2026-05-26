@@ -1,19 +1,75 @@
 from __future__ import annotations
 
+import csv
+import random
 import re
 import time
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import httpx
-import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 DATA_PATH = Path(__file__).parent / "data.json"
+QUESTION_BANK_PATH = Path(__file__).parent.parent.parent / "data" / "all_questions.csv"
+
+CATEGORIES_V2 = {
+    "coding_cs":          {"chinese": "编程与计算机"},
+    "math_reasoning":     {"chinese": "数学推理"},
+    "logical_reasoning":  {"chinese": "逻辑推理"},
+    "safety_guard":       {"chinese": "安全检测"},
+    "common_science":     {"chinese": "常识与科学"},
+    "game_dev":           {"chinese": "游戏开发"},
+    "emotion_psychology": {"chinese": "情感与心理"},
+    "language_logic":     {"chinese": "语言与推理"},
+}
+
+PROFILES = {
+    "full": {
+        "desc": "全部8类等比例",
+        "cats": {c: 1 for c in CATEGORIES_V2},
+    },
+    "programmer": {
+        "desc": "编程25%+数学20%+逻辑20%+游戏15%+安全10%+常识10%",
+        "cats": {
+            "coding_cs": 25, "math_reasoning": 20, "logical_reasoning": 20,
+            "game_dev": 15, "safety_guard": 10, "common_science": 10,
+        },
+    },
+    "math_logic": {
+        "desc": "数学30%+逻辑30%+编程20%+常识20%",
+        "cats": {
+            "math_reasoning": 30, "logical_reasoning": 30,
+            "coding_cs": 20, "common_science": 20,
+        },
+    },
+    "safety": {
+        "desc": "安全45%+语言25%+心理15%+常识15%",
+        "cats": {
+            "safety_guard": 45, "language_logic": 25,
+            "emotion_psychology": 15, "common_science": 15,
+        },
+    },
+    "quick": {
+        "desc": "编程25%+数学25%+逻辑20%+常识20%+安全10%",
+        "cats": {
+            "coding_cs": 25, "math_reasoning": 25, "logical_reasoning": 20,
+            "common_science": 20, "safety_guard": 10,
+        },
+    },
+}
+
+SYSTEM_PROMPT = (
+    "【系统指令：你是一个精确的答题机器，必须只输出单个答案"
+    "（如 A、B、C、D 或 Yes、No 或一个数字），"
+    "禁止输出任何解释、分析、标点或换行。违反此规则的回答将被视为无效。】\n\n"
+)
+
 
 def _api_url(base: str, path: str) -> str:
     base = base.rstrip("/")
@@ -22,18 +78,51 @@ def _api_url(base: str, path: str) -> str:
     return base + path
 
 
-PROMPTS = [
-    ("What is 7 × 8?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 56", "56"),
-    ("Which planet is closest to the Sun?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: Mercury", "Mercury"),
-    ("What is 15 + 27?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 42", "42"),
-    ("How many sides does a hexagon have?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 6", "6"),
-    ("What is the square root of 144?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 12", "12"),
-    ("In which continent is Egypt?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: Africa", "Africa"),
-    ("What is 9 × 11?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 99", "99"),
-    ("What language is primarily spoken in Brazil?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: Portuguese", "Portuguese"),
-    ("What is the chemical symbol for water?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: H2O", "H2O"),
-    ("What is 144 / 12?\nOutput a single word answer only. Do not explain. Do not include reasoning. Just the final answer.\nExample output: 12", "12"),
-]
+def _load_question_bank() -> dict[str, list[dict]]:
+    by_cat: dict[str, list[dict]] = defaultdict(list)
+    if not QUESTION_BANK_PATH.exists():
+        return by_cat
+    with open(QUESTION_BANK_PATH, "r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            by_cat[row.get("category", "common_science")].append(row)
+    return by_cat
+
+
+def _sample_questions(
+    by_cat: dict[str, list[dict]],
+    total: int,
+    profile: str,
+    seed: int | None,
+) -> tuple[list[dict], dict[str, int]]:
+    rng = random.Random(seed)
+    cat_ratios = PROFILES.get(profile, PROFILES["full"])["cats"]
+    total_ratio = sum(cat_ratios.values())
+    targets: dict[str, int] = {}
+    for cat, ratio in cat_ratios.items():
+        targets[cat] = max(0, int(total * ratio / total_ratio))
+    diff = total - sum(targets.values())
+    if diff != 0:
+        max_cat = max(cat_ratios, key=cat_ratios.get)
+        targets[max_cat] += diff
+
+    sampled: list[dict] = []
+    stats: dict[str, int] = {}
+    for cat, target in targets.items():
+        pool = by_cat.get(cat, [])
+        if not pool:
+            stats[cat] = 0
+            continue
+        pick = rng.sample(pool, min(target, len(pool)))
+        sampled.extend(pick)
+        stats[cat] = len(pick)
+
+    if len(sampled) < total:
+        all_items = [q for qs in by_cat.values() for q in qs]
+        extra = rng.sample(all_items, min(total - len(sampled), len(all_items)))
+        sampled.extend(extra)
+
+    rng.shuffle(sampled)
+    return sampled[:total], stats
 
 
 app = FastAPI(title="Model Auth Check Server")
@@ -54,31 +143,31 @@ class ProviderCreate(BaseModel):
 
 class TestRunRequest(BaseModel):
     model_ids: list[str]
-    num_tests: int = 10
+    num_tests: int = 100
+    profile: str = "programmer"
+    seed: Optional[int] = None
 
 
-# ---------------------------------------------------------------------------
-# In-memory state
-# ---------------------------------------------------------------------------
 providers: dict[str, dict] = {}
 models: dict[str, dict] = {}
+question_bank: dict[str, list[dict]] = {}
 
 
 def _load() -> None:
+    global question_bank
     if DATA_PATH.exists():
         import json as _json
-
         with open(DATA_PATH, encoding="utf-8") as f:
             data = _json.load(f)
         providers.clear()
         providers.update(data.get("providers", {}))
         models.clear()
         models.update(data.get("models", {}))
+    question_bank = _load_question_bank()
 
 
 def _save() -> None:
     import json as _json
-
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(DATA_PATH, "w", encoding="utf-8") as f:
         _json.dump({"providers": providers, "models": models}, f, indent=2)
@@ -88,10 +177,6 @@ def _save() -> None:
 async def startup() -> None:
     _load()
 
-
-# ---------------------------------------------------------------------------
-# Provider CRUD
-# ---------------------------------------------------------------------------
 
 @app.get("/api/providers")
 async def list_providers():
@@ -167,10 +252,6 @@ async def fetch_provider_models(pid: str):
     )
 
 
-# ---------------------------------------------------------------------------
-# All models
-# ---------------------------------------------------------------------------
-
 @app.get("/api/models")
 async def list_models(provider_id: Optional[str] = None):
     all_m = list(models.values())
@@ -187,10 +268,6 @@ async def delete_model(fid: str):
     _save()
     return {"ok": True}
 
-
-# ---------------------------------------------------------------------------
-# Test queue & runs
-# ---------------------------------------------------------------------------
 
 test_queue: list[dict] = []
 test_results: list[dict] = []
@@ -254,16 +331,43 @@ async def remove_from_queue(fid: str):
     return {"removed": before - len(test_queue), "queue_size": len(test_queue)}
 
 
+@app.get("/api/test/bank")
+async def get_bank_stats():
+    total = sum(len(v) for v in question_bank.values())
+    cats = {
+        cat: len(qs)
+        for cat, qs in question_bank.items()
+    }
+    return {
+        "total": total,
+        "categories": cats,
+        "loaded": total > 0,
+        "profiles": {k: {"desc": v["desc"], "cats": list(v["cats"].keys())} for k, v in PROFILES.items()},
+    }
+
+
 @app.post("/api/test/run")
 async def run_test(req: TestRunRequest):
     targets = [models[fid] for fid in req.model_ids if fid in models]
     if not targets:
         raise HTTPException(400, "No valid models to test")
 
+    bank_total = sum(len(v) for v in question_bank.values())
+    if bank_total == 0:
+        raise HTTPException(
+            500,
+            "Question bank not loaded. Ensure data/all_questions.csv exists at "
+            f"{QUESTION_BANK_PATH}",
+        )
+
+    seed = req.seed if req.seed is not None else int(time.time())
+    sampled, cat_stats = _sample_questions(question_bank, req.num_tests, req.profile, seed)
+
+    if not sampled:
+        raise HTTPException(500, "No questions sampled from the bank")
+
     run_id = str(uuid.uuid4())[:8]
     run_results: list[dict] = []
-
-    prompts = PROMPTS[: req.num_tests]
 
     async with httpx.AsyncClient(timeout=60) as client:
         for m in targets:
@@ -275,6 +379,9 @@ async def run_test(req: TestRunRequest):
                     "error": "Provider not found",
                     "passed": 0,
                     "total": 0,
+                    "avg_latency_ms": 0,
+                    "details": [],
+                    "categories": {},
                 })
                 continue
 
@@ -284,10 +391,17 @@ async def run_test(req: TestRunRequest):
                 "Content-Type": "application/json",
             }
             passed = 0
-            total = len(prompts)
+            total = len(sampled)
             details: list[dict] = []
+            cat_passed: dict[str, int] = defaultdict(int)
+            cat_total: dict[str, int] = defaultdict(int)
 
-            for prompt, expected in prompts:
+            for q in sampled:
+                prompt = SYSTEM_PROMPT + q["question"].strip()
+                expected = q["answer"].strip()
+                category = q.get("category", "common_science")
+                cat_total[category] += 1
+
                 start = time.perf_counter()
                 try:
                     r = await client.post(
@@ -304,12 +418,13 @@ async def run_test(req: TestRunRequest):
                     elapsed = (time.perf_counter() - start) * 1000
                     if r.status_code != 200:
                         details.append({
-                            "prompt": prompt,
+                            "prompt": q["question"][:120],
                             "expected": expected,
                             "actual": None,
                             "correct": False,
                             "error": f"HTTP {r.status_code}",
                             "latency_ms": elapsed,
+                            "category": category,
                         })
                         continue
 
@@ -323,23 +438,26 @@ async def run_test(req: TestRunRequest):
                     ok = _normalize(content_stripped) == _normalize(expected)
                     if ok:
                         passed += 1
+                        cat_passed[category] += 1
                     details.append({
-                        "prompt": prompt,
+                        "prompt": q["question"][:120],
                         "expected": expected,
                         "actual": content_stripped,
                         "correct": ok,
                         "error": None,
                         "latency_ms": elapsed,
+                        "category": category,
                     })
                 except httpx.HTTPError as e:
                     elapsed = (time.perf_counter() - start) * 1000
                     details.append({
-                        "prompt": prompt,
+                        "prompt": q["question"][:120],
                         "expected": expected,
                         "actual": None,
                         "correct": False,
                         "error": str(e),
                         "latency_ms": elapsed,
+                        "category": category,
                     })
 
             run_results.append({
@@ -352,6 +470,10 @@ async def run_test(req: TestRunRequest):
                 ),
                 "details": details,
                 "error": None,
+                "categories": {
+                    cat: {"passed": cat_passed.get(cat, 0), "total": cat_total.get(cat, 0)}
+                    for cat in cat_total
+                },
             })
 
     result = {
@@ -361,6 +483,10 @@ async def run_test(req: TestRunRequest):
         "total_models": len(targets),
         "total_passed": sum(r["passed"] for r in run_results),
         "total_questions": sum(r["total"] for r in run_results),
+        "seed": seed,
+        "profile": req.profile,
+        "num_tests": req.num_tests,
+        "category_sampled": cat_stats,
     }
     test_results.insert(0, result)
     return result
@@ -379,15 +505,14 @@ async def get_run(run_id: str):
     raise HTTPException(404, "Run not found")
 
 
-# ---------------------------------------------------------------------------
-# Health
-# ---------------------------------------------------------------------------
-
 @app.get("/api/health")
 async def health():
+    bank_total = sum(len(v) for v in question_bank.values())
     return {
         "status": "ok",
         "providers": len(providers),
         "models": len(models),
         "queue": len(test_queue),
+        "bank_loaded": bank_total > 0,
+        "bank_size": bank_total,
     }
