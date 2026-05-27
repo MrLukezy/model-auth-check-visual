@@ -260,6 +260,9 @@ const ModelRow: Component<ModelRowProps> = props => {
   const totalRetries = () =>
     props.result.details.reduce((sum, d) => sum + (d.retries || 0), 0)
 
+  const totalTimeouts = () =>
+    props.result.details.filter(d => d.timed_out).length
+
   return (
     <div class={`rounded-lg p-3 text-sm relative ${props.isBestAccuracy ? "best-row-shimmer" : ""}`}
          style="background: var(--color-card);">
@@ -289,6 +292,11 @@ const ModelRow: Component<ModelRowProps> = props => {
           <Show when={totalRetries() > 0}>
             <span class="text-orange-400" title={`Retried ${totalRetries()} time(s) total`}>
               🔄{totalRetries()}
+            </span>
+          </Show>
+          <Show when={totalTimeouts() > 0}>
+            <span class="text-[var(--color-danger)]" title={`${totalTimeouts()} question(s) timed out (60s)`}>
+              ⏱{totalTimeouts()}
             </span>
           </Show>
           <span class={scoreColor(props.result.passed, props.result.total)}>
@@ -332,8 +340,12 @@ const ModelRow: Component<ModelRowProps> = props => {
                   <span class="text-[var(--color-fg-muted)] w-14 text-right">
                     {d.latency_ms.toFixed(0)}ms
                   </span>
-                  {d.retries && d.retries > 0 ? (
-                    <span class="text-orange-400 w-8 text-right" title={`Retried ${d.retries} time(s)`}>
+                  {d.timed_out ? (
+                    <span class="text-[var(--color-danger)] w-8 text-center" title={`Timed out after ${d.retries || 0} retries`}>
+                      ⏱
+                    </span>
+                  ) : d.retries && d.retries > 0 ? (
+                    <span class="text-orange-400 w-8 text-center" title={`Retried ${d.retries} time(s)`}>
                       🔄{d.retries}
                     </span>
                   ) : (

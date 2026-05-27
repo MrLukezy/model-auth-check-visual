@@ -22,6 +22,7 @@ export interface PromptResult {
   latency_ms: number
   category?: string
   retries?: number
+  timed_out?: boolean
 }
 
 export interface CategoryStats {

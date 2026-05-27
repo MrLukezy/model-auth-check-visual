@@ -409,7 +409,9 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
     per_model_limit = min(5, max(1, 100 // len(targets)))
 
     async def test_single_question(client: httpx.AsyncClient, model_info: dict,
-                                   provider: dict, question: dict, max_retries: int = 5) -> dict:
+                                   provider: dict, question: dict,
+                                   max_retries: int = 5,
+                                   total_timeout_s: float = 60.0) -> dict:
         model_id = model_info["model_id"]
         url = _api_url(provider["base_url"], "/v1/chat/completions")
         headers = {
@@ -421,11 +423,35 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
         expected = question["answer"].strip()
         category = question.get("category", "common_science")
 
+        def _timeout_result(attempt: int, error_msg: str) -> dict:
+            elapsed = (time.perf_counter() - start) * 1000
+            return {
+                "prompt": question["question"][:120],
+                "expected": expected,
+                "actual": None,
+                "correct": False,
+                "error": error_msg,
+                "latency_ms": elapsed,
+                "category": category,
+                "retries": attempt,
+                "timed_out": True,
+            }
+
         async with global_semaphore:
             start = time.perf_counter()
             last_error = None
-            
+
             for attempt in range(max_retries):
+                # Check total elapsed against total timeout
+                elapsed_s = time.perf_counter() - start
+                remaining_s = total_timeout_s - elapsed_s
+                if remaining_s <= 1.0:
+                    return _timeout_result(attempt, f"Total timeout ({total_timeout_s:.0f}s)")
+
+                per_attempt_timeout = min(30.0, remaining_s - 0.5)
+                if per_attempt_timeout < 2.0:
+                    per_attempt_timeout = 2.0
+
                 try:
                     r = await client.post(
                         url,
@@ -436,14 +462,14 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                             "temperature": 0,
                             "max_tokens": 512,
                         },
-                        timeout=30,
+                        timeout=per_attempt_timeout,
                     )
-                    
+
                     # 如果状态码不是 200，记录错误并继续重试
                     if r.status_code != 200:
                         last_error = f"HTTP {r.status_code}"
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(0.5 * (attempt + 1))  # 指数退避
+                            await asyncio.sleep(0.5 * (attempt + 1))
                             continue
                         else:
                             elapsed = (time.perf_counter() - start) * 1000
@@ -456,6 +482,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                                 "latency_ms": elapsed,
                                 "category": category,
                                 "retries": attempt,
+                                "timed_out": False,
                             }
 
                     # 成功获取响应，解析内容
@@ -468,7 +495,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                     content_stripped = _extract_answer(content, expected)
                     ok = _normalize(content_stripped) == _normalize(expected)
                     elapsed = (time.perf_counter() - start) * 1000
-                    
+
                     return {
                         "prompt": question["question"][:120],
                         "expected": expected,
@@ -478,38 +505,38 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                         "latency_ms": elapsed,
                         "category": category,
                         "retries": attempt,
+                        "timed_out": False,
                     }
-                    
+
+                except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.TimeoutException) as e:
+                    # Per-attempt timeout: check if total time budget still available
+                    last_error = f"Timeout ({per_attempt_timeout:.0f}s)"
+                    total_elapsed = time.perf_counter() - start
+                    if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
+                        return _timeout_result(
+                            attempt,
+                            f"Total timeout ({total_timeout_s:.0f}s)"
+                            if total_elapsed >= total_timeout_s
+                            else f"Timeout ({per_attempt_timeout:.0f}s)",
+                        )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+
                 except httpx.HTTPError as e:
                     last_error = str(e)
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(0.5 * (attempt + 1))  # 指数退避
-                        continue
-                    else:
-                        elapsed = (time.perf_counter() - start) * 1000
-                        return {
-                            "prompt": question["question"][:120],
-                            "expected": expected,
-                            "actual": None,
-                            "correct": False,
-                            "error": last_error,
-                            "latency_ms": elapsed,
-                            "category": category,
-                            "retries": attempt,
-                        }
-            
-            # 理论上不会到达这里，但为了类型安全
-            elapsed = (time.perf_counter() - start) * 1000
-            return {
-                "prompt": question["question"][:120],
-                "expected": expected,
-                "actual": None,
-                "correct": False,
-                "error": last_error or "Unknown error",
-                "latency_ms": elapsed,
-                "category": category,
-                "retries": max_retries - 1,
-            }
+                    total_elapsed = time.perf_counter() - start
+                    if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
+                        return _timeout_result(
+                            attempt,
+                            f"Total timeout ({total_timeout_s:.0f}s)"
+                            if total_elapsed >= total_timeout_s
+                            else last_error,
+                        )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+
+            # Fallback (should not be reached)
+            return _timeout_result(max_retries - 1, last_error or "Unknown error")
 
     async def test_model_worker(model_info: dict, model_semaphore: asyncio.Semaphore):
         # full_id is the unique key "provider_id:model_id" so that models with the

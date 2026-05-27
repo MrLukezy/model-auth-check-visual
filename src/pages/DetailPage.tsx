@@ -293,10 +293,14 @@ const RunDetail: Component<{ run: TestRun }> = props => {
                     <td class="px-4 py-3 text-right relative z-10">
                       {(() => {
                         const rt = r.details.reduce((sum, d) => sum + (d.retries || 0), 0)
-                        return rt > 0 ? (
-                          <span class="text-orange-400">🔄{rt}</span>
-                        ) : (
-                          <span class="text-[var(--color-fg-muted)]">0</span>
+                        const to = r.details.filter(d => d.timed_out).length
+                        const parts: string[] = []
+                        return (
+                          <div class="flex items-center justify-end gap-1">
+                            {rt > 0 && <span class="text-orange-400" title={`Retried ${rt} time(s)`}>🔄{rt}</span>}
+                            {to > 0 && <span class="text-[var(--color-danger)]" title={`${to} timed out (60s)`}>⏱{to}</span>}
+                            {rt === 0 && to === 0 && <span class="text-[var(--color-fg-muted)]">0</span>}
+                          </div>
                         )
                       })()}
                     </td>
