@@ -20,6 +20,7 @@ interface TestRunState {
 }
 
 interface UIState {
+  activeTab: "providers" | "models" | "tests" | "record"
   expandedRuns: Record<string, boolean>
   sortRuns: Record<string, "accuracy" | "elapsed">
 }
@@ -34,6 +35,7 @@ const [testRunState, setTestRunState] = createStore<TestRunState>({
 })
 
 const [uiState, setUiState] = createStore<UIState>({
+  activeTab: "providers",
   expandedRuns: {},
   sortRuns: {},
 })

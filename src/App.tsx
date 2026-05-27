@@ -1,4 +1,4 @@
-import { Component, createSignal, Show, For, onMount } from "solid-js"
+import { Component, Show, For, onMount } from "solid-js"
 import { HashRouter, Route, useNavigate } from "@solidjs/router"
 import ProvidersPage from "./pages/ProvidersPage"
 import ModelsPage from "./pages/ModelsPage"
@@ -7,7 +7,7 @@ import RecordPage from "./pages/RecordPage"
 import DetailPage from "./pages/DetailPage"
 import BackendStatus from "./components/BackendStatus"
 import TitleBar from "./components/TitleBar"
-import { testRunState } from "./store"
+import { testRunState, uiState, setUiState } from "./store"
 import { api } from "./api"
 
 type Page = "providers" | "models" | "tests" | "record"
@@ -20,7 +20,8 @@ const NAV: { key: Page; label: string }[] = [
 ]
 
 const MainLayout: Component = () => {
-  const [page, setPage] = createSignal<Page>("providers")
+  const page = () => uiState.activeTab
+  const setPage = (p: Page) => setUiState("activeTab", p)
 
   onMount(async () => {
     try {
