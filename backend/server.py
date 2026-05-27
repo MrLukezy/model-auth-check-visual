@@ -158,7 +158,7 @@ question_bank: dict[str, list[dict]] = {}
 
 
 def _load() -> None:
-    global question_bank
+    global question_bank, test_queue
     if DATA_PATH.exists():
         with open(DATA_PATH, encoding="utf-8") as f:
             data = json.load(f)
@@ -166,14 +166,24 @@ def _load() -> None:
         providers.update(data.get("providers", {}))
         models.clear()
         models.update(data.get("models", {}))
+        # Restore test queue: only keep ids whose models still exist
+        persisted_queue_ids = data.get("queue_ids", [])
+        test_queue = [
+            models[fid] for fid in persisted_queue_ids if fid in models
+        ]
     question_bank = _load_question_bank()
     _load_results()
 
 
 def _save() -> None:
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    queue_ids = [item["id"] for item in test_queue]
     with open(DATA_PATH, "w", encoding="utf-8") as f:
-        json.dump({"providers": providers, "models": models}, f, indent=2)
+        json.dump(
+            {"providers": providers, "models": models, "queue_ids": queue_ids},
+            f,
+            indent=2,
+        )
 
 
 def _load_results() -> None:
@@ -345,6 +355,8 @@ async def add_to_queue(model_full_ids: list[str]):
             continue
         test_queue.append(models[fid])
         added.append(fid)
+    if added:
+        _save()
     return {"added": added, "queue_size": len(test_queue)}
 
 
@@ -358,6 +370,8 @@ async def remove_from_queue(fid: str):
     global test_queue
     before = len(test_queue)
     test_queue = [x for x in test_queue if x["id"] != fid]
+    if len(test_queue) < before:
+        _save()
     return {"removed": before - len(test_queue), "queue_size": len(test_queue)}
 
 
