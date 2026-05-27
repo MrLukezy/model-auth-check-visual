@@ -1,27 +1,21 @@
 import { Component, createResource, Show, For } from "solid-js"
-import { useParams, useNavigate } from "@solidjs/router"
+import { useParams } from "@solidjs/router"
 import { SolidApexCharts } from "solid-apexcharts"
 import { api, TestRun, ModelResult } from "../api"
 import { CAT_LABELS, formatElapsed, scoreColor } from "../components/ResultCard"
 import IconLegend from "../components/IconLegend"
 import "../components/score-colors.css"
+
 const DetailPage: Component = () => {
   const params = useParams<{ runId: string }>()
-  const navigate = useNavigate()
   const [data] = createResource(async () => {
     const r = await api.getResultById(params.runId)
     return r as TestRun | null
   })
 
   return (
-    <div class="h-screen overflow-auto bg-[var(--color-bg)] text-[var(--color-fg)]">
+    <div class="flex-1 overflow-auto bg-[var(--color-bg)] text-[var(--color-fg)]">
       <div class="max-w-7xl mx-auto p-8">
-        <button
-          onClick={() => navigate(-1)}
-          class="mb-4 text-sm text-[var(--color-accent)] hover:text-[var(--color-accent-hover)] transition flex items-center gap-1"
-        >
-          ← Back
-        </button>
         <IconLegend />
         <Show
           when={data()}
