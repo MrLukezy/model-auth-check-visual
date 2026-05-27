@@ -1,13 +1,15 @@
-import { Component, createSignal, onMount, onCleanup, For, Show } from "solid-js"
+import { Component, createSignal, onMount, For, Show } from "solid-js"
 import { api, TestRun } from "../api"
 import { ResultCard } from "../components/ResultCard"
 import IconLegend from "../components/IconLegend"
+import ConfirmModal from "../components/ConfirmModal"
 import { usePolling } from "../hooks/usePolling"
 
 const RecordPage: Component = () => {
   const [runs, setRuns] = createSignal<TestRun[]>([])
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = createSignal<string | null>(null)
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true)
@@ -30,8 +32,14 @@ const RecordPage: Component = () => {
     return runs.map(r => `${r.run_id}:${r.timestamp}:${r.total_passed}`).join('|')
   }
 
-  const handleDelete = async (runId: string) => {
-    if (!confirm(`Delete test run ${runId}? This cannot be undone.`)) return
+  const handleDeleteClick = (runId: string) => {
+    setDeleteTarget(runId)
+  }
+
+  const confirmDelete = async () => {
+    const runId = deleteTarget()
+    if (!runId) return
+    setDeleteTarget(null)
     try {
       await api.deleteResult(runId)
       setRuns(prev => prev.filter(r => r.run_id !== runId))
@@ -69,8 +77,21 @@ const RecordPage: Component = () => {
 
       <Show when={!loading() && runs().length > 0}>
         <For each={runs()}>
-          {run => <ResultCard run={run} onDelete={handleDelete} />}
+          {run => <ResultCard run={run} onDelete={handleDeleteClick} />}
         </For>
+      </Show>
+
+      <Show when={deleteTarget()}>
+        <ConfirmModal
+          open={true}
+          title="Delete Test Run"
+          message={`Delete test run #${deleteTarget()}? This cannot be undone.`}
+          confirmText="Delete"
+          cancelText="Cancel"
+          danger
+          onConfirm={confirmDelete}
+          onCancel={() => setDeleteTarget(null)}
+        />
       </Show>
     </div>
   )

@@ -1,5 +1,6 @@
 import { Component, createSignal, onMount, For, Show } from "solid-js"
 import { api, Provider } from "../api"
+import ConfirmModal from "../components/ConfirmModal"
 
 const PROVIDER_PRESETS = [
   { value: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini" },
@@ -17,12 +18,14 @@ const PROVIDER_PRESETS = [
 const ProvidersPage: Component = () => {
   const [providers, setProviders] = createSignal<Provider[]>([])
   const [error, setError] = createSignal<string | null>(null)
+  const [success, setSuccess] = createSignal<string | null>(null)
   const [selectedPreset, setSelectedPreset] = createSignal("openai")
   const [name, setName] = createSignal("")
   const [baseUrl, setBaseUrl] = createSignal("")
   const [apiKey, setApiKey] = createSignal("")
   const [showKey, setShowKey] = createSignal(false)
   const [loading, setLoading] = createSignal(false)
+  const [deleteTarget, setDeleteTarget] = createSignal<{ id: string; name: string } | null>(null)
 
   const preset = () => PROVIDER_PRESETS.find(p => p.value === selectedPreset())!
 
@@ -67,9 +70,15 @@ const ProvidersPage: Component = () => {
   }
 
   const handleDelete = async (id: string, pName: string) => {
-    if (!confirm(`Delete "${pName}" and all its models?`)) return
+    setDeleteTarget({ id, name: pName })
+  }
+
+  const confirmDelete = async () => {
+    const target = deleteTarget()
+    if (!target) return
+    setDeleteTarget(null)
     try {
-      await api.deleteProvider(id)
+      await api.deleteProvider(target.id)
       await load()
     } catch (e) {
       setError(String(e))
@@ -79,9 +88,10 @@ const ProvidersPage: Component = () => {
   const handleTest = async (providerId: string, pName: string) => {
     setLoading(true)
     setError(null)
+    setSuccess(null)
     try {
       const models = await api.fetchProviderModels(providerId)
-      alert(`Connected! Found ${models.length} model(s) from ${pName}`)
+      setSuccess(`Connected! Found ${models.length} model(s) from ${pName}`)
     } catch (e) {
       setError(`Test failed: ${e}`)
     } finally {
@@ -158,6 +168,12 @@ const ProvidersPage: Component = () => {
         </div>
       </Show>
 
+      <Show when={success()}>
+        <div class="text-[var(--color-gold)] text-sm mb-4 px-4 py-2 bg-[var(--color-surface)] border border-[var(--color-gold)]/40 rounded-lg">
+          {success()}
+        </div>
+      </Show>
+
       <div class="text-xs text-[var(--color-accent-muted)] px-4 py-2 mb-4 bg-amber-900/10 border-l-3 border-[var(--color-accent)] rounded-r-lg">
         Provider configurations are saved locally. Ollama needs to be running locally.
       </div>
@@ -207,6 +223,21 @@ const ProvidersPage: Component = () => {
           </div>
         </Show>
       </div>
+
+      <Show when={deleteTarget()}>
+        {t => (
+          <ConfirmModal
+            open={true}
+            title="Delete Provider"
+            message={`Delete "${t().name}" and all its fetched models? This cannot be undone.`}
+            confirmText="Delete"
+            cancelText="Cancel"
+            danger
+            onConfirm={confirmDelete}
+            onCancel={() => setDeleteTarget(null)}
+          />
+        )}
+      </Show>
     </div>
   )
 }
