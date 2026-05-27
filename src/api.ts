@@ -144,7 +144,10 @@ async function fetchJson<T>(
   const release = await acquireSlot()
 
   const controller = new AbortController()
-  const timerId = window.setTimeout(() => controller.abort(), timeoutMs)
+  const timerId = window.setTimeout(
+    () => controller.abort(new DOMException(`Timeout after ${timeoutMs}ms`, "AbortError")),
+    timeoutMs,
+  )
 
   const promise = (async (): Promise<T> => {
     try {
@@ -159,6 +162,12 @@ async function fetchJson<T>(
       }
       const text = await res.text()
       return text ? (JSON.parse(text) as T) : (undefined as T)
+    } catch (e: any) {
+      // Convert AbortError into a friendlier timeout message
+      if (e?.name === "AbortError") {
+        throw new Error(`Request timeout (${Math.round(timeoutMs / 1000)}s): ${path}`)
+      }
+      throw e
     } finally {
       window.clearTimeout(timerId)
       release()

@@ -14,7 +14,7 @@ const ModelsPage: Component = () => {
   const [filterProvider, setFilterProvider] = createSignal("")
   const [search, setSearch] = createSignal("")
 
-  const load = async () => {
+  const load = async (silent = false) => {
     try {
       const [p, m, q] = await Promise.all([
         api.listProviders(),
@@ -24,12 +24,13 @@ const ModelsPage: Component = () => {
       setProviders(p)
       setAllModels(m)
       setQueue(q)
+      if (silent) setError(null)
     } catch (e) {
-      setError(String(e))
+      if (!silent) setError(String(e))
     }
   }
-  onMount(load)
-  usePolling(load, 5000)
+  onMount(() => load())
+  usePolling(() => load(true), 5000)
 
   const handleFetch = async (providerId: string, providerName: string) => {
     setFetching(true)

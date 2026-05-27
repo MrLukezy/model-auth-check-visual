@@ -17,8 +17,9 @@ const RecordPage: Component = () => {
       if (newFingerprint !== currentFingerprint) {
         setRuns(r)
       }
+      if (silent) setError(null)
     } catch (e) {
-      setError(String(e))
+      if (!silent) setError(String(e))
     } finally {
       if (!silent) setLoading(false)
     }

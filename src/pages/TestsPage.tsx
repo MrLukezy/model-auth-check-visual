@@ -46,7 +46,7 @@ const TestsPage: Component = () => {
   const [runStartTime, setRunStartTime] = createSignal<number | null>(null)
   const [elapsed, setElapsed] = createSignal(0)
 
-  const load = async () => {
+  const load = async (silent = false) => {
     try {
       const [q, r, b] = await Promise.all([api.getQueue(), api.getResults(), api.getBankStats()])
 
@@ -69,12 +69,13 @@ const TestsPage: Component = () => {
       }
 
       setBankStats(b)
+      if (silent) setError(null)
     } catch (e) {
-      setError(String(e))
+      if (!silent) setError(String(e))
     }
   }
-  onMount(load)
-  usePolling(load, 5000)
+  onMount(() => load())
+  usePolling(() => load(true), 5000)
 
   const handleRun = async () => {
     const q = queue()
