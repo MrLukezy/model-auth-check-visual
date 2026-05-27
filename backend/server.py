@@ -409,7 +409,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
     per_model_limit = min(5, max(1, 100 // len(targets)))
 
     async def test_single_question(client: httpx.AsyncClient, model_info: dict,
-                                   provider: dict, question: dict) -> dict:
+                                   provider: dict, question: dict, max_retries: int = 5) -> dict:
         model_id = model_info["model_id"]
         url = _api_url(provider["base_url"], "/v1/chat/completions")
         headers = {
@@ -423,59 +423,93 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
 
         async with global_semaphore:
             start = time.perf_counter()
-            try:
-                r = await client.post(
-                    url,
-                    headers=headers,
-                    json={
-                        "model": model_id,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0,
-                        "max_tokens": 512,
-                    },
-                    timeout=30,
-                )
-                elapsed = (time.perf_counter() - start) * 1000
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    r = await client.post(
+                        url,
+                        headers=headers,
+                        json={
+                            "model": model_id,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0,
+                            "max_tokens": 512,
+                        },
+                        timeout=30,
+                    )
+                    
+                    # 如果状态码不是 200，记录错误并继续重试
+                    if r.status_code != 200:
+                        last_error = f"HTTP {r.status_code}"
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(0.5 * (attempt + 1))  # 指数退避
+                            continue
+                        else:
+                            elapsed = (time.perf_counter() - start) * 1000
+                            return {
+                                "prompt": question["question"][:120],
+                                "expected": expected,
+                                "actual": None,
+                                "correct": False,
+                                "error": last_error,
+                                "latency_ms": elapsed,
+                                "category": category,
+                                "retries": attempt,
+                            }
 
-                if r.status_code != 200:
+                    # 成功获取响应，解析内容
+                    content = (
+                        r.json()
+                        .get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                    )
+                    content_stripped = _extract_answer(content, expected)
+                    ok = _normalize(content_stripped) == _normalize(expected)
+                    elapsed = (time.perf_counter() - start) * 1000
+                    
                     return {
                         "prompt": question["question"][:120],
                         "expected": expected,
-                        "actual": None,
-                        "correct": False,
-                        "error": f"HTTP {r.status_code}",
+                        "actual": content_stripped,
+                        "correct": ok,
+                        "error": None,
                         "latency_ms": elapsed,
                         "category": category,
+                        "retries": attempt,
                     }
-
-                content = (
-                    r.json()
-                    .get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
-                content_stripped = _extract_answer(content, expected)
-                ok = _normalize(content_stripped) == _normalize(expected)
-                return {
-                    "prompt": question["question"][:120],
-                    "expected": expected,
-                    "actual": content_stripped,
-                    "correct": ok,
-                    "error": None,
-                    "latency_ms": elapsed,
-                    "category": category,
-                }
-            except httpx.HTTPError as e:
-                elapsed = (time.perf_counter() - start) * 1000
-                return {
-                    "prompt": question["question"][:120],
-                    "expected": expected,
-                    "actual": None,
-                    "correct": False,
-                    "error": str(e),
-                    "latency_ms": elapsed,
-                    "category": category,
-                }
+                    
+                except httpx.HTTPError as e:
+                    last_error = str(e)
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(0.5 * (attempt + 1))  # 指数退避
+                        continue
+                    else:
+                        elapsed = (time.perf_counter() - start) * 1000
+                        return {
+                            "prompt": question["question"][:120],
+                            "expected": expected,
+                            "actual": None,
+                            "correct": False,
+                            "error": last_error,
+                            "latency_ms": elapsed,
+                            "category": category,
+                            "retries": attempt,
+                        }
+            
+            # 理论上不会到达这里，但为了类型安全
+            elapsed = (time.perf_counter() - start) * 1000
+            return {
+                "prompt": question["question"][:120],
+                "expected": expected,
+                "actual": None,
+                "correct": False,
+                "error": last_error or "Unknown error",
+                "latency_ms": elapsed,
+                "category": category,
+                "retries": max_retries - 1,
+            }
 
     async def test_model_worker(model_info: dict, model_semaphore: asyncio.Semaphore):
         model_id = model_info["model_id"]
