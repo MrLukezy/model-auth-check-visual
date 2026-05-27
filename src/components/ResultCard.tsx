@@ -2,6 +2,7 @@ import { Component, createSignal, For, Show } from "solid-js"
 import { useNavigate } from "@solidjs/router"
 import { TestRun, ModelResult } from "../api"
 import { uiState, setUiState } from "../store"
+import ConfirmModal from "./ConfirmModal"
 import "./score-colors.css"
 
 const CAT_LABELS: Record<string, string> = {
@@ -71,6 +72,7 @@ export const ResultCard: Component<ResultCardProps> = props => {
   const navigate = useNavigate()
   const isExpanded = () => uiState.expandedRuns[props.run.run_id] || false
   const sortBy = () => uiState.sortRuns[props.run.run_id] || "accuracy"
+  const [confirmOpen, setConfirmOpen] = createSignal(false)
 
   const pct = () =>
     props.run.total_questions > 0
@@ -92,6 +94,22 @@ export const ResultCard: Component<ResultCardProps> = props => {
     return fastest?.model_id || null
   }
 
+  // Find the model with best accuracy (highest pass/total ratio)
+  const bestAccuracyModelId = () => {
+    const results = props.run.results
+    if (!results || results.length === 0) return null
+    let best = results[0]
+    let bestScore = best.total > 0 ? best.passed / best.total : 0
+    for (const r of results) {
+      const score = r.total > 0 ? r.passed / r.total : 0
+      if (score > bestScore) {
+        best = r
+        bestScore = score
+      }
+    }
+    return best?.model_id || null
+  }
+
   const toggleExpanded = () => {
     setUiState('expandedRuns', props.run.run_id, v => !v)
   }
@@ -105,9 +123,18 @@ export const ResultCard: Component<ResultCardProps> = props => {
     navigate(`/detail/${props.run.run_id}`)
   }
 
-  const handleDelete = (e: Event) => {
+  const handleDeleteClick = (e: Event) => {
     e.stopPropagation()
+    setConfirmOpen(true)
+  }
+
+  const handleDeleteConfirm = () => {
+    setConfirmOpen(false)
     props.onDelete?.(props.run.run_id)
+  }
+
+  const handleDeleteCancel = () => {
+    setConfirmOpen(false)
   }
 
   return (
@@ -144,13 +171,10 @@ export const ResultCard: Component<ResultCardProps> = props => {
         </div>
 
         <div class="flex items-center gap-3 shrink-0">
-          <span class={scoreColor(props.run.total_passed, props.run.total_questions)}>
-            {props.run.total_passed}/{props.run.total_questions} ({pct()}%)
-          </span>
           <Show when={props.onDelete}>
             <button
               class="text-[var(--color-fg-muted)] hover:text-[var(--color-danger)] transition p-1 rounded"
-              onClick={handleDelete}
+              onClick={handleDeleteClick}
               title="Delete this test run"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -190,11 +214,26 @@ export const ResultCard: Component<ResultCardProps> = props => {
 
           <div class="flex flex-col gap-2">
             <For each={sorted()}>
-              {r => <ModelRow result={r} isFastest={r.model_id === fastestModelId()} />}
+              {r => <ModelRow
+                result={r}
+                isFastest={r.model_id === fastestModelId()}
+                isBestAccuracy={r.model_id === bestAccuracyModelId()}
+              />}
             </For>
           </div>
         </div>
       </Show>
+
+      <ConfirmModal
+        open={confirmOpen()}
+        title="Delete Test Run"
+        message={`Are you sure you want to delete test run #${props.run.run_id}? This action cannot be undone.`}
+        confirmText="Delete"
+        cancelText="Cancel"
+        danger
+        onConfirm={handleDeleteConfirm}
+        onCancel={handleDeleteCancel}
+      />
     </div>
   )
 }
@@ -202,6 +241,7 @@ export const ResultCard: Component<ResultCardProps> = props => {
 interface ModelRowProps {
   result: ModelResult
   isFastest?: boolean
+  isBestAccuracy?: boolean
 }
 
 const ModelRow: Component<ModelRowProps> = props => {
@@ -211,14 +251,18 @@ const ModelRow: Component<ModelRowProps> = props => {
     props.result.details.reduce((sum, d) => sum + (d.retries || 0), 0)
 
   return (
-    <div class="bg-[var(--color-card)] rounded-lg p-3 text-sm">
+    <div class={`rounded-lg p-3 text-sm relative ${props.isBestAccuracy ? "best-row-shimmer" : ""}`}
+         style="background: var(--color-card);">
       <div
-        class="flex items-center justify-between cursor-pointer"
+        class="flex items-center justify-between cursor-pointer relative z-10"
         onClick={() => setExpanded(!expanded())}
       >
         <div class="flex items-center gap-2">
           <Show when={props.isFastest}>
             <span class="text-[var(--color-accent)] text-sm" title="Fastest model">⚡</span>
+          </Show>
+          <Show when={props.isBestAccuracy}>
+            <span class="score-diamond text-sm font-semibold" title="Best accuracy">🏆</span>
           </Show>
           <span class="font-medium">{props.result.model_id}</span>
           <span class="text-[var(--color-fg-muted)] text-xs ml-2">{props.result.provider_name}</span>
@@ -245,7 +289,7 @@ const ModelRow: Component<ModelRowProps> = props => {
       </div>
 
       <Show when={expanded()}>
-        <div class="mt-3 border-t border-[var(--color-border)] pt-3">
+        <div class="mt-3 border-t border-[var(--color-border)] pt-3 relative z-10">
           <Show when={props.result.categories && Object.keys(props.result.categories).length > 0}>
             <div class="flex flex-wrap gap-1 mb-3">
               <For each={Object.entries(props.result.categories || {})}>
@@ -293,7 +337,7 @@ const ModelRow: Component<ModelRowProps> = props => {
       </Show>
 
       <Show when={props.result.error}>
-        <div class="text-[var(--color-danger)] text-xs mt-2">{props.result.error}</div>
+        <div class="text-[var(--color-danger)] text-xs mt-2 relative z-10">{props.result.error}</div>
       </Show>
     </div>
   )

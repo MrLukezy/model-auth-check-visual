@@ -52,3 +52,40 @@
 }
 
 .progress-diamond { animation: score-bg-diamond-pulse 3s ease-in-out infinite; }
+
+/* 最佳准确率行流光背景 */
+.best-row-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.best-row-shimmer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    110deg,
+    transparent 20%,
+    rgba(201, 169, 97, 0.18) 45%,
+    rgba(232, 212, 154, 0.28) 50%,
+    rgba(201, 169, 97, 0.18) 55%,
+    transparent 80%
+  );
+  animation: best-row-shimmer-flow 3.5s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.best-row-shimmer > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes best-row-shimmer-flow {
+  0%   { left: -100%; }
+  60%  { left: 100%; }
+  100% { left: 100%; }
+}

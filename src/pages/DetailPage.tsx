@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "@solidjs/router"
 import { SolidApexCharts } from "solid-apexcharts"
 import { api, TestRun, ModelResult } from "../api"
 import { CAT_LABELS, formatElapsed, scoreColor } from "../components/ResultCard"
+import "../components/score-colors.css"
 const DetailPage: Component = () => {
   const params = useParams<{ runId: string }>()
   const navigate = useNavigate()
@@ -12,8 +13,8 @@ const DetailPage: Component = () => {
   })
 
   return (
-    <div class="min-h-screen bg-[var(--color-bg)] text-[var(--color-fg)] p-8">
-      <div class="max-w-7xl mx-auto">
+    <div class="h-screen overflow-auto bg-[var(--color-bg)] text-[var(--color-fg)]">
+      <div class="max-w-7xl mx-auto p-8">
         <button
           onClick={() => navigate(-1)}
           class="mb-4 text-sm text-[var(--color-accent)] hover:text-[var(--color-accent-hover)] transition flex items-center gap-1"
@@ -52,6 +53,21 @@ const RunDetail: Component<{ run: TestRun }> = props => {
       }
     }
     return fastest?.model_id || null
+  }
+
+  const bestAccuracyModelId = () => {
+    const results = run().results
+    if (!results || results.length === 0) return null
+    let best = results[0]
+    let bestScore = best.total > 0 ? best.passed / best.total : 0
+    for (const r of results) {
+      const score = r.total > 0 ? r.passed / r.total : 0
+      if (score > bestScore) {
+        best = r
+        bestScore = score
+      }
+    }
+    return best?.model_id || null
   }
 
   const providers = (): { name: string; results: ModelResult[] }[] => {
@@ -212,29 +228,32 @@ const RunDetail: Component<{ run: TestRun }> = props => {
                 )}
               >
                 {r => (
-                  <tr class="border-t border-[var(--color-border)] hover:bg-[var(--color-card)]/30">
-                    <td class="px-4 py-3 font-medium">
+                  <tr class={`border-t border-[var(--color-border)] hover:bg-[var(--color-card)]/30 ${r.model_id === bestAccuracyModelId() ? "best-row-shimmer" : ""}`}>
+                    <td class="px-4 py-3 font-medium relative z-10">
                       <div class="flex items-center gap-1">
                         <Show when={r.model_id === fastestModelId()}>
                           <span class="text-[var(--color-accent)]" title="Fastest model">⚡</span>
                         </Show>
+                        <Show when={r.model_id === bestAccuracyModelId()}>
+                          <span class="score-diamond font-semibold" title="Best accuracy">🏆</span>
+                        </Show>
                         {r.model_id}
                       </div>
                     </td>
-                    <td class="px-4 py-3 text-[var(--color-fg-muted)] text-xs">{r.provider_name}</td>
-                    <td class={`px-4 py-3 text-right font-semibold ${scoreColor(r.passed, r.total)}`}>
+                    <td class="px-4 py-3 text-[var(--color-fg-muted)] text-xs relative z-10">{r.provider_name}</td>
+                    <td class={`px-4 py-3 text-right font-semibold ${scoreColor(r.passed, r.total)} relative z-10`}>
                       {r.total > 0 ? `${Math.round((r.passed / r.total) * 100)}%` : "-"}
                     </td>
-                    <td class="px-4 py-3 text-right">
+                    <td class="px-4 py-3 text-right relative z-10">
                       {r.passed}/{r.total}
                     </td>
-                    <td class="px-4 py-3 text-right text-[var(--color-fg-muted)]">
+                    <td class="px-4 py-3 text-right text-[var(--color-fg-muted)] relative z-10">
                       {formatElapsed(r.elapsed_ms || 0)}
                     </td>
-                    <td class="px-4 py-3 text-right text-[var(--color-fg-muted)]">
+                    <td class="px-4 py-3 text-right text-[var(--color-fg-muted)] relative z-10">
                       {r.avg_latency_ms.toFixed(0)}ms
                     </td>
-                    <td class="px-4 py-3 text-right">
+                    <td class="px-4 py-3 text-right relative z-10">
                       {(() => {
                         const rt = r.details.reduce((sum, d) => sum + (d.retries || 0), 0)
                         return rt > 0 ? (
@@ -248,7 +267,7 @@ const RunDetail: Component<{ run: TestRun }> = props => {
                       {cat => {
                         const c = (r.categories || {})[cat]
                         return (
-                          <td class={`px-4 py-3 text-right ${c ? scoreColor(c.passed, c.total) : "text-[var(--color-fg-muted)]"}`}>
+                          <td class={`px-4 py-3 text-right relative z-10 ${c ? scoreColor(c.passed, c.total) : "text-[var(--color-fg-muted)]"}`}>
                             {c ? `${Math.round((c.passed / c.total) * 100)}%` : "-"}
                           </td>
                         )
