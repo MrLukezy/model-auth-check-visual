@@ -818,6 +818,8 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 # 创建批次任务，每个任务完成时立即更新进度
                 async def process_question(q_item):
                     """处理单个问题，完成后立即更新进度队列"""
+                    nonlocal completed, passed, error_count
+                    
                     try:
                         if cancel_event.is_set():
                             detail = {
