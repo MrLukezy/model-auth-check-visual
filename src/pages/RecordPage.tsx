@@ -14,12 +14,20 @@ const RecordPage: Component = () => {
     if (!silent) setLoading(true)
     try {
       const r = await api.getResults()
-      setRuns(r)
+      const newFingerprint = getFingerprint(r)
+      const currentFingerprint = getFingerprint(runs())
+      if (newFingerprint !== currentFingerprint) {
+        setRuns(r)
+      }
     } catch (e) {
       setError(String(e))
     } finally {
       if (!silent) setLoading(false)
     }
+  }
+
+  const getFingerprint = (runs: TestRun[]): string => {
+    return runs.map(r => `${r.run_id}:${r.timestamp}:${r.total_passed}`).join('|')
   }
 
   onMount(() => load())

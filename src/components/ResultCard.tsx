@@ -1,5 +1,6 @@
-import { Component, createSignal, For, Show } from "solid-js"
+import { Component, For, Show } from "solid-js"
 import { TestRun, ModelResult } from "../api"
+import { uiState, setUiState } from "../store"
 import "./score-colors.css"
 
 const CAT_LABELS: Record<string, string> = {
@@ -60,8 +61,8 @@ export function sortResults(
 export { CAT_LABELS }
 
 export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = props => {
-  const [collapsed, setCollapsed] = createSignal(true)
-  const [sortBy, setSortBy] = createSignal<"accuracy" | "elapsed">("accuracy")
+  const isExpanded = () => uiState.expandedRuns[props.run.run_id] || false
+  const sortBy = () => uiState.sortRuns[props.run.run_id] || "accuracy"
 
   const pct = () =>
     props.run.total_questions > 0
@@ -70,10 +71,18 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
 
   const sorted = () => sortResults(props.run.results, sortBy())
 
+  const toggleExpanded = (e: Event) => {
+    setUiState('expandedRuns', props.run.run_id, v => !v)
+  }
+
+  const setSort = (e: Event) => {
+    setUiState('sortRuns', props.run.run_id, (e.target as HTMLSelectElement).value as any)
+  }
+
   const openDetail = (e: Event) => {
     e.stopPropagation()
-    const url = `${window.location.origin}${window.location.pathname}#/detail/${props.run.run_id}`
-    window.open(url, "_blank")
+    const baseUrl = window.location.origin + window.location.pathname
+    window.open(`${baseUrl}#/detail/${props.run.run_id}`, "_blank")
   }
 
   return (
@@ -86,7 +95,7 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
     >
       <div
         class="flex items-center justify-between p-5 cursor-pointer hover:bg-[var(--color-card)]/30 transition"
-        onClick={() => setCollapsed(!collapsed())}
+        onClick={toggleExpanded}
       >
         <div class="flex items-center gap-2 flex-wrap min-w-0 flex-1">
           <span class="w-2 h-2 rounded-full bg-[var(--color-accent)] shrink-0" />
@@ -113,11 +122,11 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
           <span class={scoreColor(props.run.total_passed, props.run.total_questions)}>
             {props.run.total_passed}/{props.run.total_questions} ({pct()}%)
           </span>
-          <span class="text-[var(--color-fg-muted)]">{collapsed() ? "▶" : "▼"}</span>
+          <span class="text-[var(--color-fg-muted)]">{isExpanded() ? "▼" : "▶"}</span>
         </div>
       </div>
 
-      <Show when={!collapsed()}>
+      <Show when={isExpanded()}>
         <div class="border-t border-[var(--color-border)] p-5">
           <div class="flex items-center justify-between mb-4">
             <label class="flex items-center gap-2 text-xs text-[var(--color-fg-muted)]">
@@ -125,7 +134,8 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
               <select
                 class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1 text-xs outline-none focus:border-[var(--color-accent)]"
                 value={sortBy()}
-                onChange={e => setSortBy(e.currentTarget.value as any)}
+                onChange={setSort}
+                onClick={(e) => e.stopPropagation()}
               >
                 <option value="accuracy">Accuracy</option>
                 <option value="elapsed">Elapsed Time</option>

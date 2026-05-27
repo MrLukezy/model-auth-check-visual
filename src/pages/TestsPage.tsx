@@ -46,8 +46,25 @@ const TestsPage: Component = () => {
   const load = async () => {
     try {
       const [q, r, b] = await Promise.all([api.getQueue(), api.getResults(), api.getBankStats()])
-      setQueue(q)
-      setLatestRun(r.length > 0 ? r[0] : null)
+
+      const queueFingerprint = q.map(m => m.id).join('|')
+      const currentQueueFingerprint = queue().map(m => m.id).join('|')
+      if (queueFingerprint !== currentQueueFingerprint) {
+        setQueue(q)
+      }
+
+      if (r.length > 0) {
+        const latestRunData = r[0]
+        const currentRun = latestRun()
+        if (!currentRun ||
+            currentRun.run_id !== latestRunData.run_id ||
+            currentRun.total_passed !== latestRunData.total_passed) {
+          setLatestRun(latestRunData)
+        }
+      } else if (latestRun() !== null) {
+        setLatestRun(null)
+      }
+
       setBankStats(b)
     } catch (e) {
       setError(String(e))

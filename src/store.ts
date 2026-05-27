@@ -19,6 +19,11 @@ interface TestRunState {
   error: string | null
 }
 
+interface UIState {
+  expandedRuns: Record<string, boolean>
+  sortRuns: Record<string, "accuracy" | "elapsed">
+}
+
 const [testRunState, setTestRunState] = createStore<TestRunState>({
   running: false,
   elapsed: 0,
@@ -28,5 +33,10 @@ const [testRunState, setTestRunState] = createStore<TestRunState>({
   error: null,
 })
 
-export { testRunState, setTestRunState }
+const [uiState, setUiState] = createStore<UIState>({
+  expandedRuns: {},
+  sortRuns: {},
+})
+
+export { testRunState, setTestRunState, uiState, setUiState }
 export type { ModelProgress, TestRunState }
