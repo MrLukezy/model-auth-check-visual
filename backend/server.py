@@ -445,6 +445,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
 
     async def test_single_question(client: httpx.AsyncClient, model_info: dict,
                                    provider: dict, question: dict,
+                                   cancel_event: asyncio.Event,
                                    max_retries: int = 5,
                                    total_timeout_s: float = 60.0) -> dict:
         model_id = model_info["model_id"]
@@ -457,6 +458,21 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
         prompt = SYSTEM_PROMPT + question["question"].strip()
         expected = question["answer"].strip()
         category = question.get("category", "common_science")
+
+        def _cancelled_result(attempt: int) -> dict:
+            elapsed = (time.perf_counter() - start) * 1000
+            return {
+                "prompt": question["question"][:120],
+                "expected": expected,
+                "actual": None,
+                "correct": False,
+                "error": "Cancelled by user",
+                "latency_ms": elapsed,
+                "category": category,
+                "retries": attempt,
+                "timed_out": False,
+                "cancelled": True,
+            }
 
         def _timeout_result(attempt: int, error_msg: str) -> dict:
             elapsed = (time.perf_counter() - start) * 1000
@@ -477,6 +493,10 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
             last_error = None
 
             for attempt in range(max_retries):
+                # Check cancellation at start of each retry
+                if cancel_event.is_set():
+                    return _cancelled_result(attempt)
+
                 # Check total elapsed against total timeout
                 elapsed_s = time.perf_counter() - start
                 remaining_s = total_timeout_s - elapsed_s
@@ -500,11 +520,22 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                         timeout=per_attempt_timeout,
                     )
 
+                    # Check cancellation after a potentially long request
+                    if cancel_event.is_set():
+                        return _cancelled_result(attempt)
+
                     # 如果状态码不是 200，记录错误并继续重试
                     if r.status_code != 200:
                         last_error = f"HTTP {r.status_code}"
                         if attempt < max_retries - 1:
-                            await asyncio.sleep(0.5 * (attempt + 1))
+                            # Sleep with cancellation check - interruptible sleep
+                            sleep_total = 0.5 * (attempt + 1)
+                            sleep_step = 0.1
+                            while sleep_total > 0 and not cancel_event.is_set():
+                                await asyncio.sleep(min(sleep_step, sleep_total))
+                                sleep_total -= sleep_step
+                            if cancel_event.is_set():
+                                return _cancelled_result(attempt + 1)
                             continue
                         else:
                             elapsed = (time.perf_counter() - start) * 1000
@@ -545,6 +576,8 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
 
                 except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.TimeoutException) as e:
                     # Per-attempt timeout: check if total time budget still available
+                    if cancel_event.is_set():
+                        return _cancelled_result(attempt + 1)
                     last_error = f"Timeout ({per_attempt_timeout:.0f}s)"
                     total_elapsed = time.perf_counter() - start
                     if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
@@ -554,10 +587,19 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                             if total_elapsed >= total_timeout_s
                             else f"Timeout ({per_attempt_timeout:.0f}s)",
                         )
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                    # Interruptible sleep during retry backoff
+                    sleep_total = 0.5 * (attempt + 1)
+                    sleep_step = 0.1
+                    while sleep_total > 0 and not cancel_event.is_set():
+                        await asyncio.sleep(min(sleep_step, sleep_total))
+                        sleep_total -= sleep_step
+                    if cancel_event.is_set():
+                        return _cancelled_result(attempt + 1)
                     continue
 
                 except httpx.HTTPError as e:
+                    if cancel_event.is_set():
+                        return _cancelled_result(attempt + 1)
                     last_error = str(e)
                     total_elapsed = time.perf_counter() - start
                     if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
@@ -567,7 +609,14 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                             if total_elapsed >= total_timeout_s
                             else last_error,
                         )
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                    # Interruptible sleep during retry backoff
+                    sleep_total = 0.5 * (attempt + 1)
+                    sleep_step = 0.1
+                    while sleep_total > 0 and not cancel_event.is_set():
+                        await asyncio.sleep(min(sleep_step, sleep_total))
+                        sleep_total -= sleep_step
+                    if cancel_event.is_set():
+                        return _cancelled_result(attempt + 1)
                     continue
 
             # Fallback (should not be reached)
@@ -606,18 +655,54 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
         await progress_queue.put({"type": "model_start", "full_id": full_id, "model_id": model_id, "provider_name": provider_name})
 
         async with httpx.AsyncClient(timeout=60) as client:
-            # Process questions in batches
-            batch_size = 5
+            # Process questions in batches. Each batch is throttled by the
+            # model_semaphore, and we yield between batches so the uvicorn
+            # event loop can handle other requests (health checks, progress
+            # polling, cancel signals).
+            # Earlier "create-all-1000-tasks-upfront" caused a thundering herd:
+            # uvicorn's event loop would starve, health checks timed out, and
+            # the UI showed "Backend starting..." even though the backend was
+            # alive.
             all_details: list[dict] = []
             cat_passed: dict[str, int] = defaultdict(int)
             cat_total: dict[str, int] = defaultdict(int)
             passed = 0
             completed = 0
             error_count = 0
+            batch_size = 10
 
             for i in range(0, len(sampled), batch_size):
                 # Abort this model's remaining questions if the run was cancelled
                 if cancel_event.is_set():
+                    # Fill remaining questions with cancelled placeholders
+                    for q in sampled[i:]:
+                        all_details.append({
+                            "prompt": q["question"][:120],
+                            "expected": q["answer"].strip(),
+                            "actual": None,
+                            "correct": False,
+                            "error": "Cancelled by user",
+                            "latency_ms": 0,
+                            "category": q.get("category", "common_science"),
+                            "retries": 0,
+                            "timed_out": False,
+                            "cancelled": True,
+                        })
+                        completed += 1
+                        error_count += 1
+                        cat = q.get("category", "common_science")
+                        cat_total[cat] += 1
+                    # Send a final progress update
+                    await progress_queue.put({
+                        "type": "model_progress",
+                        "full_id": full_id,
+                        "model_id": model_id,
+                        "provider_name": provider_name,
+                        "completed": completed,
+                        "total": len(sampled),
+                        "passed": passed,
+                        "error_count": error_count,
+                    })
                     break
 
                 batch = sampled[i:i + batch_size]
@@ -639,7 +724,22 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                                 "cancelled": True,
                             }
                         async with model_semaphore:
-                            return await test_single_question(client, model_info, provider, q_item)
+                            # Check cancel again after acquiring the slot
+                            # (we may have waited a while)
+                            if cancel_event.is_set():
+                                return {
+                                    "prompt": q_item["question"][:120],
+                                    "expected": q_item["answer"].strip(),
+                                    "actual": None,
+                                    "correct": False,
+                                    "error": "Cancelled by user",
+                                    "latency_ms": 0,
+                                    "category": q_item.get("category", "common_science"),
+                                    "retries": 0,
+                                    "timed_out": False,
+                                    "cancelled": True,
+                                }
+                            return await test_single_question(client, model_info, provider, q_item, cancel_event)
                     tasks.append(wrapped_task())
 
                 batch_results = await asyncio.gather(*tasks)
@@ -654,7 +754,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                         error_count += 1
                     completed += 1
 
-                # Send progress update
+                # Send progress update for the batch
                 await progress_queue.put({
                     "type": "model_progress",
                     "full_id": full_id,
@@ -665,6 +765,12 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                     "passed": passed,
                     "error_count": error_count,
                 })
+
+                # Explicitly yield to the event loop so other requests
+                # (health checks, other models' progress, cancel signals)
+                # get a chance to run. Without this the single-threaded
+                # uvicorn loop can starve incoming HTTP traffic.
+                await asyncio.sleep(0)
 
             # Calculate final stats
             avg_latency = (

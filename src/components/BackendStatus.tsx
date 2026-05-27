@@ -1,9 +1,11 @@
 import { Component, createSignal, Show, onMount, onCleanup } from "solid-js"
 import { api } from "../api"
+import { testRunState } from "../store"
 
 const BackendStatus: Component = () => {
   const [ok, setOk] = createSignal<boolean | null>(null)
   const [attempts, setAttempts] = createSignal(0)
+  const [consecutiveFailures, setConsecutiveFailures] = createSignal(0)
 
   onMount(() => {
     let slowMode = false
@@ -14,16 +16,32 @@ const BackendStatus: Component = () => {
         if (!ok()) {
           setOk(true)
           setAttempts(0)
+          setConsecutiveFailures(0)
           // Switch to slower polling once connected (less resource pressure)
           slowMode = true
           clearInterval(id)
           id = window.setInterval(check, 15000)
+        } else {
+          setConsecutiveFailures(0)
         }
       } catch {
-        setOk(false)
         setAttempts(a => a + 1)
-        // When disconnected, speed back up to detect recovery quickly
-        if (slowMode) {
+        const failures = consecutiveFailures() + 1
+        setConsecutiveFailures(failures)
+
+        // Flap protection: require 3+ consecutive failures before flipping UI
+        // to "disconnected". During massive test runs, uvicorn's event loop
+        // can be saturated, causing brief health-check timeouts even though
+        // the backend is alive and processing — we don't want to mislead
+        // the user into thinking the server died.
+        if (failures >= 3) {
+          setOk(false)
+        } else if (ok() === null) {
+          // First-ever check failed - show as not connected
+          setOk(false)
+        }
+        // When really disconnected, speed back up to detect recovery quickly
+        if (failures >= 3 && slowMode) {
           slowMode = false
           clearInterval(id)
           id = window.setInterval(check, 3000)
@@ -42,6 +60,8 @@ const BackendStatus: Component = () => {
       } else if (ok()) {
         clearInterval(id)
         id = window.setInterval(check, 15000)
+        // Trigger an immediate check when becoming visible again
+        check()
       } else {
         clearInterval(id)
         id = window.setInterval(check, 3000)
@@ -54,6 +74,9 @@ const BackendStatus: Component = () => {
       document.removeEventListener("visibilitychange", onVisibilityChange)
     })
   })
+
+  // Show a subtle "busy" state while tests are running
+  const isTesting = () => testRunState.running
 
   return (
     <div class="px-5 py-3 border-t border-[var(--color-ink-2)]/30 text-xs flex items-center gap-2">
@@ -68,8 +91,15 @@ const BackendStatus: Component = () => {
           </>
         }
       >
-        <span class="w-2 h-2 rounded-full bg-[var(--color-gold)] shadow-[0_0_6px_var(--color-gold)]" />
-        <span class="text-[var(--color-ink-1)]">Backend connected</span>
+        <Show when={isTesting()} fallback={
+          <>
+            <span class="w-2 h-2 rounded-full bg-[var(--color-gold)] shadow-[0_0_6px_var(--color-gold)]" />
+            <span class="text-[var(--color-ink-1)]">Backend connected</span>
+          </>
+        }>
+          <span class="w-2 h-2 rounded-full bg-[var(--color-gold)] shadow-[0_0_6px_var(--color-gold)] animate-pulse" />
+          <span class="text-[var(--color-ink-1)]">Testing...</span>
+        </Show>
       </Show>
     </div>
   )
