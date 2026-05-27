@@ -232,51 +232,51 @@ const TestsPage: Component = () => {
       </Show>
 
       {/* Config & Run */}
-      <Show when={queue().length > 0}>
-        <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-5 mb-6 flex flex-col gap-4">
-          <div class="flex items-center gap-4 flex-wrap">
-            <label class="text-sm text-[var(--color-fg-muted)]">Profile:</label>
-            <select
-              class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] transition"
-              value={profile()}
-              onChange={e => setProfile(e.currentTarget.value)}
-            >
-              <For each={PROFILES_LIST}>
-                {p => <option value={p.value}>{p.label}</option>}
-              </For>
-            </select>
+      <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-5 mb-6 flex flex-col gap-4">
+        <div class="flex items-center gap-4 flex-wrap">
+          <label class="text-sm text-[var(--color-fg-muted)]">Profile:</label>
+          <select
+            class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] transition"
+            value={profile()}
+            onChange={e => setProfile(e.currentTarget.value)}
+          >
+            <For each={PROFILES_LIST}>
+              {p => <option value={p.value}>{p.label}</option>}
+            </For>
+          </select>
 
-            <label class="text-sm text-[var(--color-fg-muted)]">Questions:</label>
-            <select
-              class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] transition"
-              value={String(numTests())}
-              onChange={e => setNumTests(parseInt(e.currentTarget.value) || 100)}
-            >
-              <option value="10">10</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-              <option value="200">200</option>
-              <option value="500">500</option>
-              <option value="1000">1000</option>
-            </select>
-          </div>
-
-          <div class="flex items-center justify-between">
-            <div class="text-xs text-[var(--color-fg-muted)]">
-              {running()
-                ? `Running... ${formatTime(elapsed())}`
-                : `${numTests()} random questions × ${queue().length} model(s) — same questions for all models (parallel)`}
-            </div>
-            <button
-              class="bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white font-medium text-sm px-6 py-2 rounded-lg transition disabled:opacity-50"
-              disabled={running() || !bankStats()?.loaded}
-              onClick={handleRun}
-            >
-              {running() ? `Running (${formatTime(elapsed())})...` : `Run Test`}
-            </button>
-          </div>
+          <label class="text-sm text-[var(--color-fg-muted)]">Questions:</label>
+          <select
+            class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] transition"
+            value={String(numTests())}
+            onChange={e => setNumTests(parseInt(e.currentTarget.value) || 100)}
+          >
+            <option value="10">10</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+            <option value="500">500</option>
+            <option value="1000">1000</option>
+          </select>
         </div>
-      </Show>
+
+        <div class="flex items-center justify-between">
+          <div class="text-xs text-[var(--color-fg-muted)]">
+            {running()
+              ? `Running... ${formatTime(elapsed())}`
+              : queue().length > 0
+              ? `${numTests()} random questions × ${queue().length} model(s) — same questions for all models (parallel)`
+              : "Add models to queue from Models page to start testing"}
+          </div>
+          <button
+            class="bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white font-medium text-sm px-6 py-2 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={running() || queue().length === 0 || !bankStats()?.loaded}
+            onClick={handleRun}
+          >
+            {running() ? `Running (${formatTime(elapsed())})...` : `Run Test`}
+          </button>
+        </div>
+      </div>
 
       <Show when={error()}>
         <div class="text-[var(--color-danger)] text-sm mb-4">{error()}</div>

@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start-backend": "node scripts/start-backend.js",
+    "dev:all": "npm run start-backend & npm run dev",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri"

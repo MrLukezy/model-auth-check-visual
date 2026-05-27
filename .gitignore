@@ -11,3 +11,4 @@ backend/__pycache__/
 *.pyc
 src/**/*.js
 src/**/*.jsx
+public/favicon.png
