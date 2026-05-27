@@ -1,4 +1,4 @@
-import { Component, For, Show } from "solid-js"
+import { Component, createSignal, For, Show } from "solid-js"
 import { TestRun, ModelResult } from "../api"
 import { uiState, setUiState } from "../store"
 import "./score-colors.css"
