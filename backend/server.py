@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+import logging
 import random
 import re
 import time
@@ -17,6 +18,20 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# Set up logging - write to both console and a file so we can always see
+# what's happening during long test runs, even when the UI shows
+# "Backend starting..."
+LOG_PATH = Path(__file__).parent / "server.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_PATH, encoding="utf-8", mode="a"),
+    ],
+)
+log = logging.getLogger("test-server")
 
 DATA_PATH = Path(__file__).parent / "data.json"
 RESULTS_PATH = Path(__file__).parent / "results.json"
@@ -312,6 +327,39 @@ test_results: list[dict] = []
 # down to each worker.
 active_runs: dict[str, asyncio.Event] = {}
 
+# Global diagnostic state - tracks in-flight requests per model so we can
+# see where workers are stuck if the server appears to freeze.
+run_diagnostics: dict[str, dict] = {
+    "current_run": None,
+    "model_state": {},  # full_id -> {completed, total, last_activity, in_flight}
+    "event_loop_load": 0.0,
+    "last_heartbeat": 0.0,
+    "start_time": 0.0,
+    "requests_total": 0,
+    "requests_failed": 0,
+}
+
+
+@app.get("/api/debug")
+async def debug_state():
+    """Expose internal state for diagnosing freezes. Call manually when
+    the UI shows 'Backend starting...' but no errors are visible."""
+    now = time.time()
+    loop_lag = now - run_diagnostics["last_heartbeat"]
+    return {
+        "server_time": datetime.now().isoformat(),
+        "loop_lag_s": round(loop_lag, 2),
+        "active_runs": list(active_runs.keys()),
+        "run_diagnostics": run_diagnostics,
+        "queue_size": len(test_queue),
+        "results_count": len(test_results),
+        "providers": len(providers),
+        "log_path": str(LOG_PATH),
+    }
+# asyncio.Event lets workers wait/cooperate efficiently, and we can pass the event
+# down to each worker.
+active_runs: dict[str, asyncio.Event] = {}
+
 
 def _normalize(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
@@ -507,6 +555,20 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 if per_attempt_timeout < 2.0:
                     per_attempt_timeout = 2.0
 
+                req_id = run_diagnostics["requests_total"]
+                run_diagnostics["requests_total"] += 1
+                full_id = model_info["id"]
+                state = run_diagnostics["model_state"].get(full_id)
+                if state is not None:
+                    state["last_activity"] = time.time()
+                    state["in_flight"] = state.get("in_flight", 0) + 1
+
+                log.info(
+                    "[req %d] %s attempt=%d timeout=%.1fs qid=%s",
+                    req_id, model_id, attempt, per_attempt_timeout,
+                    question.get("id", "?"),
+                )
+                r = None
                 try:
                     r = await client.post(
                         url,
@@ -519,6 +581,69 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                         },
                         timeout=per_attempt_timeout,
                     )
+                except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.TimeoutException) as e:
+                    # Per-attempt timeout: check if total time budget still available
+                    log.warning("[req %d] %s timeout exception: %s (%.2fs elapsed)",
+                                req_id, model_id, e, time.perf_counter() - start)
+                    run_diagnostics["requests_failed"] += 1
+                    run_diagnostics["last_heartbeat"] = time.time()
+                    if state is not None:
+                        state["in_flight"] = max(0, state.get("in_flight", 1) - 1)
+                    if cancel_event.is_set():
+                        return _cancelled_result(attempt + 1)
+                    last_error = f"Timeout ({per_attempt_timeout:.0f}s)"
+                    total_elapsed = time.perf_counter() - start
+                    if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
+                        return _timeout_result(
+                            attempt,
+                            f"Total timeout ({total_timeout_s:.0f}s)"
+                            if total_elapsed >= total_timeout_s
+                            else f"Timeout ({per_attempt_timeout:.0f}s)",
+                        )
+                    # Interruptible sleep during retry backoff
+                    sleep_total = 0.5 * (attempt + 1)
+                    sleep_step = 0.1
+                    while sleep_total > 0 and not cancel_event.is_set():
+                        await asyncio.sleep(min(sleep_step, sleep_total))
+                        sleep_total -= sleep_step
+                    if cancel_event.is_set():
+                        return _cancelled_result(attempt + 1)
+                    continue
+                except httpx.HTTPError as e:
+                    log.warning("[req %d] %s HTTPError: %s", req_id, model_id, e)
+                    run_diagnostics["requests_failed"] += 1
+                    run_diagnostics["last_heartbeat"] = time.time()
+                    if state is not None:
+                        state["in_flight"] = max(0, state.get("in_flight", 1) - 1)
+                    if cancel_event.is_set():
+                        return _cancelled_result(attempt + 1)
+                    last_error = str(e)
+                    total_elapsed = time.perf_counter() - start
+                    if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
+                        return _timeout_result(
+                            attempt,
+                            f"Total timeout ({total_timeout_s:.0f}s)"
+                            if total_elapsed >= total_timeout_s
+                            else last_error,
+                        )
+                    # Interruptible sleep during retry backoff
+                    sleep_total = 0.5 * (attempt + 1)
+                    sleep_step = 0.1
+                    while sleep_total > 0 and not cancel_event.is_set():
+                        await asyncio.sleep(min(sleep_step, sleep_total))
+                        sleep_total -= sleep_step
+                    if cancel_event.is_set():
+                        return _cancelled_result(attempt + 1)
+                    continue
+
+                    # Update diagnostic counters on successful HTTP completion
+                    run_diagnostics["last_heartbeat"] = time.time()
+                    if state is not None:
+                        state["in_flight"] = max(0, state.get("in_flight", 1) - 1)
+
+                    log.info("[req %d] %s status=%d (took %.2fs)",
+                             req_id, model_id, r.status_code,
+                             time.perf_counter() - start)
 
                     # Check cancellation after a potentially long request
                     if cancel_event.is_set():
@@ -527,6 +652,10 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                     # 如果状态码不是 200，记录错误并继续重试
                     if r.status_code != 200:
                         last_error = f"HTTP {r.status_code}"
+                        log.warning("[req %d] %s HTTP error %d body=%s",
+                                    req_id, model_id, r.status_code,
+                                    (r.text or "")[:200])
+                        run_diagnostics["requests_failed"] += 1
                         if attempt < max_retries - 1:
                             # Sleep with cancellation check - interruptible sleep
                             sleep_total = 0.5 * (attempt + 1)
@@ -574,50 +703,6 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                         "timed_out": False,
                     }
 
-                except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.TimeoutException) as e:
-                    # Per-attempt timeout: check if total time budget still available
-                    if cancel_event.is_set():
-                        return _cancelled_result(attempt + 1)
-                    last_error = f"Timeout ({per_attempt_timeout:.0f}s)"
-                    total_elapsed = time.perf_counter() - start
-                    if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
-                        return _timeout_result(
-                            attempt,
-                            f"Total timeout ({total_timeout_s:.0f}s)"
-                            if total_elapsed >= total_timeout_s
-                            else f"Timeout ({per_attempt_timeout:.0f}s)",
-                        )
-                    # Interruptible sleep during retry backoff
-                    sleep_total = 0.5 * (attempt + 1)
-                    sleep_step = 0.1
-                    while sleep_total > 0 and not cancel_event.is_set():
-                        await asyncio.sleep(min(sleep_step, sleep_total))
-                        sleep_total -= sleep_step
-                    if cancel_event.is_set():
-                        return _cancelled_result(attempt + 1)
-                    continue
-
-                except httpx.HTTPError as e:
-                    if cancel_event.is_set():
-                        return _cancelled_result(attempt + 1)
-                    last_error = str(e)
-                    total_elapsed = time.perf_counter() - start
-                    if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
-                        return _timeout_result(
-                            attempt,
-                            f"Total timeout ({total_timeout_s:.0f}s)"
-                            if total_elapsed >= total_timeout_s
-                            else last_error,
-                        )
-                    # Interruptible sleep during retry backoff
-                    sleep_total = 0.5 * (attempt + 1)
-                    sleep_step = 0.1
-                    while sleep_total > 0 and not cancel_event.is_set():
-                        await asyncio.sleep(min(sleep_step, sleep_total))
-                        sleep_total -= sleep_step
-                    if cancel_event.is_set():
-                        return _cancelled_result(attempt + 1)
-                    continue
 
             # Fallback (should not be reached)
             return _timeout_result(max_retries - 1, last_error or "Unknown error")
@@ -632,6 +717,17 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
         provider_id = model_info.get("provider_id")
         provider = providers.get(provider_id)
         worker_start_time = time.perf_counter()
+
+        # Initialize diagnostic state for this worker
+        run_diagnostics["model_state"][full_id] = {
+            "model_id": model_id,
+            "provider_name": provider_name,
+            "completed": 0,
+            "total": len(sampled),
+            "in_flight": 0,
+            "last_activity": time.time(),
+            "started_at": time.time(),
+        }
 
         if not provider:
             result = {
@@ -654,15 +750,24 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
 
         await progress_queue.put({"type": "model_start", "full_id": full_id, "model_id": model_id, "provider_name": provider_name})
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        # Use a dedicated client per model with explicit connection pool limits
+        # and HTTP/1.1 to avoid HTTP/2 connection leaks during long runs.
+        # HTTP/2's multiplexing can cause connection state issues after
+        # 20+ minutes of high concurrency.
+        client_limits = httpx.Limits(
+            max_keepalive_connections=5,
+            max_connections=10,
+            keepalive_expiry=5,
+        )
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(60, connect=10),
+            limits=client_limits,
+            http2=False,  # Force HTTP/1.1 for stability
+        ) as client:
             # Process questions in batches. Each batch is throttled by the
             # model_semaphore, and we yield between batches so the uvicorn
             # event loop can handle other requests (health checks, progress
             # polling, cancel signals).
-            # Earlier "create-all-1000-tasks-upfront" caused a thundering herd:
-            # uvicorn's event loop would starve, health checks timed out, and
-            # the UI showed "Backend starting..." even though the backend was
-            # alive.
             all_details: list[dict] = []
             cat_passed: dict[str, int] = defaultdict(int)
             cat_total: dict[str, int] = defaultdict(int)
@@ -670,6 +775,8 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
             completed = 0
             error_count = 0
             batch_size = 10
+            request_count = 0
+            client_reset_interval = 100  # Recreate client every 100 requests
 
             for i in range(0, len(sampled), batch_size):
                 # Abort this model's remaining questions if the run was cancelled
@@ -754,6 +861,11 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                         error_count += 1
                     completed += 1
 
+                # Update per-model diagnostics
+                if full_id in run_diagnostics["model_state"]:
+                    run_diagnostics["model_state"][full_id]["completed"] = completed
+                    run_diagnostics["model_state"][full_id]["last_activity"] = time.time()
+
                 # Send progress update for the batch
                 await progress_queue.put({
                     "type": "model_progress",
@@ -797,6 +909,13 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 "completed": completed,
             }
             results[full_id] = result
+            log.info("[worker] %s finished: %d/%d passed, %d errors, %.1fs total",
+                     model_id, passed, completed, error_count,
+                     worker_elapsed_ms / 1000)
+            # Mark worker as done in diagnostics
+            if full_id in run_diagnostics["model_state"]:
+                run_diagnostics["model_state"][full_id]["in_flight"] = 0
+                run_diagnostics["model_state"][full_id]["finished_at"] = time.time()
             await progress_queue.put({"type": "model_complete", "full_id": full_id, "model_id": model_id, "result": result})
 
     # Create per-model semaphores
@@ -805,6 +924,15 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
         model_sem = asyncio.Semaphore(per_model_limit)
         task = asyncio.create_task(test_model_worker(target, model_sem))
         model_tasks.append(task)
+
+    # Track run in diagnostics
+    run_diagnostics["current_run"] = run_id
+    run_diagnostics["start_time"] = time.time()
+    run_diagnostics["last_heartbeat"] = time.time()
+    run_diagnostics["requests_total"] = 0
+    run_diagnostics["requests_failed"] = 0
+    log.info("[run] %s started: %d models × %d questions, profile=%s",
+             run_id, len(targets), num_tests, profile)
 
     # Stream progress updates
     await progress_queue.put({
@@ -864,6 +992,16 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
         "completed": not cancelled and answered == total_questions,
         "cancelled": cancelled,
     }
+
+    # Mark run complete in diagnostics
+    run_diagnostics["current_run"] = None
+    run_end = time.time()
+    log.info(
+        "[run] %s completed: %d/%d passed, %d answered in %.1fs (%d http requests)",
+        run_id, final_result["total_passed"], final_result["total_questions"],
+        final_result["total_answered"], run_end - run_diagnostics["start_time"],
+        run_diagnostics["requests_total"],
+    )
 
     # Store in history
     test_results.insert(0, final_result)
