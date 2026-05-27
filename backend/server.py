@@ -479,7 +479,7 @@ async def cancel_run(run_id: str):
 
 async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict],
                           cat_stats: dict[str, int], num_tests: int, profile: str, seed: int):
-    global_semaphore = asyncio.Semaphore(100)
+    global_semaphore = asyncio.Semaphore(500)
     progress_queue: asyncio.Queue = asyncio.Queue()
     results: dict[str, dict] = {}
 
@@ -489,7 +489,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
     active_runs[run_id] = cancel_event
 
     # Calculate per-model concurrency based on total models
-    per_model_limit = min(5, max(1, 100 // len(targets)))
+    per_model_limit = min(50, max(5, 500 // len(targets)))
 
     async def test_single_question(client: httpx.AsyncClient, model_info: dict,
                                    provider: dict, question: dict,
@@ -750,19 +750,21 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
 
         await progress_queue.put({"type": "model_start", "full_id": full_id, "model_id": model_id, "provider_name": provider_name})
 
-        # Use a dedicated client per model with explicit connection pool limits
-        # and HTTP/1.1 to avoid HTTP/2 connection leaks during long runs.
-        # HTTP/2's multiplexing can cause connection state issues after
-        # 20+ minutes of high concurrency.
+        # Use a dedicated client per model with generous connection pool
+        # limits so requests don't queue on the client side. HTTP/2 allows
+        # multiplexing many requests over a single TCP connection, which is
+        # the dominant factor in throughput. (Forcing HTTP/1.1 in the past
+        # made tests ~5x slower - avoid that.)
         client_limits = httpx.Limits(
-            max_keepalive_connections=5,
-            max_connections=10,
-            keepalive_expiry=5,
+            max_keepalive_connections=50,
+            max_connections=100,
+            keepalive_expiry=30,
         )
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(60, connect=10),
             limits=client_limits,
-            http2=False,  # Force HTTP/1.1 for stability
+            # http2: let httpx auto-negotiate (defaults to True-capable);
+            # not forcing it either way avoids accidental downgrades.
         ) as client:
             # Process questions in batches. Each batch is throttled by the
             # model_semaphore, and we yield between batches so the uvicorn
