@@ -179,6 +179,7 @@ const RunDetail: Component<{ run: TestRun }> = props => {
                 <th class="text-right px-4 py-3">Passed</th>
                 <th class="text-right px-4 py-3">Elapsed</th>
                 <th class="text-right px-4 py-3">Avg Latency</th>
+                <th class="text-right px-4 py-3">Retries</th>
                 <For each={allCats()}>
                   {cat => <th class="text-right px-4 py-3">{CAT_LABELS[cat] || cat}</th>}
                 </For>
@@ -206,6 +207,16 @@ const RunDetail: Component<{ run: TestRun }> = props => {
                     </td>
                     <td class="px-4 py-3 text-right text-[var(--color-fg-muted)]">
                       {r.avg_latency_ms.toFixed(0)}ms
+                    </td>
+                    <td class="px-4 py-3 text-right">
+                      {(() => {
+                        const rt = r.details.reduce((sum, d) => sum + (d.retries || 0), 0)
+                        return rt > 0 ? (
+                          <span class="text-[var(--color-accent)]">⚡{rt}</span>
+                        ) : (
+                          <span class="text-[var(--color-fg-muted)]">0</span>
+                        )
+                      })()}
                     </td>
                     <For each={allCats()}>
                       {cat => {

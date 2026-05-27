@@ -21,6 +21,7 @@ export interface PromptResult {
   error: string | null
   latency_ms: number
   category?: string
+  retries?: number
 }
 
 export interface CategoryStats {

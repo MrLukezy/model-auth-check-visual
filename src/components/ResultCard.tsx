@@ -163,6 +163,9 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
 const ModelRow: Component<{ result: ModelResult }> = props => {
   const [expanded, setExpanded] = createSignal(false)
 
+  const totalRetries = () =>
+    props.result.details.reduce((sum, d) => sum + (d.retries || 0), 0)
+
   return (
     <div class="bg-[var(--color-card)] rounded-lg p-3 text-sm">
       <div
@@ -182,6 +185,11 @@ const ModelRow: Component<{ result: ModelResult }> = props => {
           <span class="text-[var(--color-fg-muted)]">
             {props.result.avg_latency_ms.toFixed(0)}ms avg
           </span>
+          <Show when={totalRetries() > 0}>
+            <span class="text-[var(--color-accent)]" title={`Total retries: ${totalRetries()}`}>
+              ⚡{totalRetries()}
+            </span>
+          </Show>
           <span class={scoreColor(props.result.passed, props.result.total)}>
             {props.result.passed}/{props.result.total}
           </span>
@@ -223,6 +231,13 @@ const ModelRow: Component<{ result: ModelResult }> = props => {
                   <span class="text-[var(--color-fg-muted)] w-14 text-right">
                     {d.latency_ms.toFixed(0)}ms
                   </span>
+                  {d.retries && d.retries > 0 ? (
+                    <span class="text-[var(--color-accent)] w-8 text-right" title={`Retried ${d.retries} time(s)`}>
+                      ⚡{d.retries}
+                    </span>
+                  ) : (
+                    <span class="w-8" />
+                  )}
                 </div>
               )}
             </For>
