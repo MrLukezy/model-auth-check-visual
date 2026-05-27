@@ -76,14 +76,41 @@ const RunDetail: Component<{ run: TestRun }> = props => {
     return best?.model_id || null
   }
 
-  const providers = (): { name: string; results: ModelResult[] }[] => {
+  const providers = (): { key: string; name: string; results: ModelResult[] }[] => {
+    // Use provider_name + model_id as the grouping key so that the same
+    // model_id under different providers (e.g. DawnShift's 5.5 vs TimiCC's 5.5)
+    // remain distinct, while true duplicates are merged.
     const map = new Map<string, ModelResult[]>()
     for (const r of run().results) {
-      const k = r.provider_name || "unknown"
-      if (!map.has(k)) map.set(k, [])
-      map.get(k)!.push(r)
+      const providerName = r.provider_name || "unknown"
+      const key = `${providerName}::${r.model_id}`
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(r)
     }
-    return Array.from(map.entries()).map(([name, results]) => ({ name, results }))
+
+    // Detect provider_names that appear more than once across distinct models
+    // (e.g. "5.5" used by both DawnShift and TimiCC). When so, disambiguate
+    // the card title with the model_id to avoid them looking like the same vendor.
+    const nameCounts = new Map<string, Set<string>>()
+    for (const [k, results] of map.entries()) {
+      const name = k.split("::")[0]
+      if (!nameCounts.has(name)) nameCounts.set(name, new Set())
+      for (const r of results) nameCounts.get(name)!.add(r.model_id)
+    }
+    const ambiguousNames = new Set(
+      Array.from(nameCounts.entries())
+        .filter(([, ids]) => ids.size > 1)
+        .map(([name]) => name),
+    )
+
+    return Array.from(map.entries()).map(([key, results]) => {
+      const [providerName] = key.split("::")
+      const first = results[0]
+      const label = ambiguousNames.has(providerName) && results.length === 1
+        ? `${providerName} · ${first.model_id}`
+        : providerName
+      return { key, name: label, results }
+    })
   }
 
   const allCats = () => {
