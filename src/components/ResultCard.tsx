@@ -52,7 +52,11 @@ export function sortResults(
     arr.sort((a, b) => {
       const pa = a.total > 0 ? a.passed / a.total : 0
       const pb = b.total > 0 ? b.passed / b.total : 0
-      return pb - pa
+      if (pb !== pa) return pb - pa
+      // 准确率相同时，耗时越短排越前
+      const ta = a.elapsed_ms && a.elapsed_ms > 0 ? a.elapsed_ms : Infinity
+      const tb = b.elapsed_ms && b.elapsed_ms > 0 ? b.elapsed_ms : Infinity
+      return ta - tb
     })
   } else {
     arr.sort((a, b) => (a.elapsed_ms || 0) - (b.elapsed_ms || 0))
@@ -100,11 +104,17 @@ export const ResultCard: Component<ResultCardProps> = props => {
     if (!results || results.length === 0) return null
     let best = results[0]
     let bestScore = best.total > 0 ? best.passed / best.total : 0
+    let bestTime = best.elapsed_ms && best.elapsed_ms > 0 ? best.elapsed_ms : Infinity
     for (const r of results) {
       const score = r.total > 0 ? r.passed / r.total : 0
-      if (score > bestScore) {
+      const time = r.elapsed_ms && r.elapsed_ms > 0 ? r.elapsed_ms : Infinity
+      if (
+        score > bestScore ||
+        (score === bestScore && time < bestTime)
+      ) {
         best = r
         bestScore = score
+        bestTime = time
       }
     }
     return best?.model_id || null

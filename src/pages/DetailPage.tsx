@@ -60,11 +60,17 @@ const RunDetail: Component<{ run: TestRun }> = props => {
     if (!results || results.length === 0) return null
     let best = results[0]
     let bestScore = best.total > 0 ? best.passed / best.total : 0
+    let bestTime = best.elapsed_ms && best.elapsed_ms > 0 ? best.elapsed_ms : Infinity
     for (const r of results) {
       const score = r.total > 0 ? r.passed / r.total : 0
-      if (score > bestScore) {
+      const time = r.elapsed_ms && r.elapsed_ms > 0 ? r.elapsed_ms : Infinity
+      if (
+        score > bestScore ||
+        (score === bestScore && time < bestTime)
+      ) {
         best = r
         bestScore = score
+        bestTime = time
       }
     }
     return best?.model_id || null
@@ -222,10 +228,14 @@ const RunDetail: Component<{ run: TestRun }> = props => {
             </thead>
             <tbody>
               <For
-                each={[...run().results].sort(
-                  (a, b) =>
-                    (b.total > 0 ? b.passed / b.total : 0) - (a.total > 0 ? a.passed / a.total : 0),
-                )}
+                each={[...run().results].sort((a, b) => {
+                  const sa = a.total > 0 ? a.passed / a.total : 0
+                  const sb = b.total > 0 ? b.passed / b.total : 0
+                  if (sb !== sa) return sb - sa
+                  const ta = a.elapsed_ms && a.elapsed_ms > 0 ? a.elapsed_ms : Infinity
+                  const tb = b.elapsed_ms && b.elapsed_ms > 0 ? b.elapsed_ms : Infinity
+                  return ta - tb
+                })}
               >
                 {r => (
                   <tr class={`border-t border-[var(--color-border)] hover:bg-[var(--color-card)]/30 ${r.model_id === bestAccuracyModelId() ? "best-row-shimmer" : ""}`}>
