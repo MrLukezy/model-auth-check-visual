@@ -815,44 +815,59 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                     break
 
                 batch = sampled[i:i + batch_size]
-                tasks = []
-                for q in batch:
-                    # Respect per-model semaphore
-                    async def wrapped_task(q_item=q):
+                # 创建批次任务，每个任务完成时立即更新进度
+                async def process_question(q_item):
+                    """处理单个问题，完成后立即更新进度队列"""
+                    try:
                         if cancel_event.is_set():
-                            return {
-                                "prompt": q_item["question"][:120],
-                                "expected": q_item["answer"].strip(),
+                            detail = {
+                                "question_id": q_item.get("id", "?"),
+                                "category": q_item.get("category", "common_science"),
+                                "prompt": q_item.get("question", "")[:100],
+                                "expected": q_item.get("answer", ""),
                                 "actual": None,
                                 "correct": False,
-                                "error": "Cancelled by user",
+                                "error": "Cancelled",
                                 "latency_ms": 0,
-                                "category": q_item.get("category", "common_science"),
                                 "retries": 0,
                                 "timed_out": False,
-                                "cancelled": True,
                             }
-                        async with model_semaphore:
-                            # Check cancel again after acquiring the slot
-                            # (we may have waited a while)
-                            if cancel_event.is_set():
-                                return {
-                                    "prompt": q_item["question"][:120],
-                                    "expected": q_item["answer"].strip(),
-                                    "actual": None,
-                                    "correct": False,
-                                    "error": "Cancelled by user",
-                                    "latency_ms": 0,
-                                    "category": q_item.get("category", "common_science"),
-                                    "retries": 0,
-                                    "timed_out": False,
-                                    "cancelled": True,
-                                }
-                            return await test_single_question(client, model_info, provider, q_item, cancel_event)
-                    tasks.append(wrapped_task())
-
-                batch_results = await asyncio.gather(*tasks)
-                for detail in batch_results:
+                        else:
+                            async with model_semaphore:
+                                if cancel_event.is_set():
+                                    detail = {
+                                        "question_id": q_item.get("id", "?"),
+                                        "category": q_item.get("category", "common_science"),
+                                        "prompt": q_item.get("question", "")[:100],
+                                        "expected": q_item.get("answer", ""),
+                                        "actual": None,
+                                        "correct": False,
+                                        "error": "Cancelled",
+                                        "latency_ms": 0,
+                                        "retries": 0,
+                                        "timed_out": False,
+                                    }
+                                else:
+                                    detail = await test_single_question(
+                                        client, model_info, provider, q_item, cancel_event
+                                    )
+                    except Exception as e:
+                        log.error("[worker] %s task crashed: %s", model_id, e)
+                        run_diagnostics["requests_failed"] += 1
+                        detail = {
+                            "question_id": q_item.get("id", "?"),
+                            "category": q_item.get("category", "common_science"),
+                            "prompt": q_item.get("question", "")[:100],
+                            "expected": q_item.get("answer", ""),
+                            "actual": None,
+                            "correct": False,
+                            "error": str(e)[:100],
+                            "latency_ms": 0,
+                            "retries": 0,
+                            "timed_out": False,
+                        }
+                    
+                    # 立即更新统计和进度，不等待批次
                     all_details.append(detail)
                     cat = detail.get("category", "common_science")
                     cat_total[cat] += 1
@@ -862,23 +877,29 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                     if detail.get("error"):
                         error_count += 1
                     completed += 1
-
-                # Update per-model diagnostics
-                if full_id in run_diagnostics["model_state"]:
-                    run_diagnostics["model_state"][full_id]["completed"] = completed
-                    run_diagnostics["model_state"][full_id]["last_activity"] = time.time()
-
-                # Send progress update for the batch
-                await progress_queue.put({
-                    "type": "model_progress",
-                    "full_id": full_id,
-                    "model_id": model_id,
-                    "provider_name": provider_name,
-                    "completed": completed,
-                    "total": len(sampled),
-                    "passed": passed,
-                    "error_count": error_count,
-                })
+                    
+                    # 每完成一题就发送进度更新
+                    if full_id in run_diagnostics["model_state"]:
+                        run_diagnostics["model_state"][full_id]["completed"] = completed
+                        run_diagnostics["model_state"][full_id]["last_activity"] = time.time()
+                    
+                    await progress_queue.put({
+                        "type": "model_progress",
+                        "full_id": full_id,
+                        "model_id": model_id,
+                        "provider_name": provider_name,
+                        "completed": completed,
+                        "total": len(sampled),
+                        "passed": passed,
+                        "error_count": error_count,
+                    })
+                    
+                    return detail
+                
+                # 启动所有任务，不等待
+                tasks = [process_question(q) for q in batch]
+                # 等待批次完成，但每个任务都独立运行
+                await asyncio.gather(*tasks, return_exceptions=True)
 
                 # Explicitly yield to the event loop so other requests
                 # (health checks, other models' progress, cancel signals)
