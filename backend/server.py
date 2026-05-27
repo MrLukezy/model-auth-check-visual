@@ -479,7 +479,7 @@ async def cancel_run(run_id: str):
 
 async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict],
                           cat_stats: dict[str, int], num_tests: int, profile: str, seed: int):
-    global_semaphore = asyncio.Semaphore(500)
+    global_semaphore = asyncio.Semaphore(150)
     progress_queue: asyncio.Queue = asyncio.Queue()
     results: dict[str, dict] = {}
 
@@ -489,13 +489,14 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
     active_runs[run_id] = cancel_event
 
     # Calculate per-model concurrency based on total models
-    per_model_limit = min(50, max(5, 500 // len(targets)))
+    # Keep it moderate to avoid event loop saturation
+    per_model_limit = min(20, max(3, 150 // len(targets)))
 
     async def test_single_question(client: httpx.AsyncClient, model_info: dict,
-                                   provider: dict, question: dict,
+                                    provider: dict, question: dict,
                                    cancel_event: asyncio.Event,
-                                   max_retries: int = 5,
-                                   total_timeout_s: float = 60.0) -> dict:
+                                   max_retries: int = 2,
+                                   total_timeout_s: float = 30.0) -> dict:
         model_id = model_info["model_id"]
         url = _api_url(provider["base_url"], "/v1/chat/completions")
         headers = {
@@ -750,18 +751,18 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
 
         await progress_queue.put({"type": "model_start", "full_id": full_id, "model_id": model_id, "provider_name": provider_name})
 
-        # Use a dedicated client per model with generous connection pool
-        # limits so requests don't queue on the client side. HTTP/2 allows
-        # multiplexing many requests over a single TCP connection, which is
-        # the dominant factor in throughput. (Forcing HTTP/1.1 in the past
-        # made tests ~5x slower - avoid that.)
+        # Use a dedicated client per model with reasonable connection pool
+        # limits. HTTP/2 allows multiplexing many requests over a single TCP
+        # connection, which is the dominant factor in throughput.
+        # Keep pool small per-client so the OS-level fd count stays low
+        # and the event loop isn't saturated by selector work.
         client_limits = httpx.Limits(
-            max_keepalive_connections=50,
-            max_connections=100,
+            max_keepalive_connections=10,
+            max_connections=30,
             keepalive_expiry=30,
         )
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(60, connect=10),
+            timeout=httpx.Timeout(30, connect=10),
             limits=client_limits,
             # http2: let httpx auto-negotiate (defaults to True-capable);
             # not forcing it either way avoids accidental downgrades.
