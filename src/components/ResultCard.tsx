@@ -3,6 +3,7 @@ import { useNavigate } from "@solidjs/router"
 import { TestRun, ModelResult } from "../api"
 import { uiState, setUiState } from "../store"
 import ConfirmModal from "./ConfirmModal"
+import IconLegend from "./IconLegend"
 import "./score-colors.css"
 
 const CAT_LABELS: Record<string, string> = {
@@ -181,6 +182,12 @@ export const ResultCard: Component<ResultCardProps> = props => {
         </div>
 
         <div class="flex items-center gap-3 shrink-0">
+          <Show when={props.run.cancelled}>
+            <span class="text-red-400 text-xs" title="Run was manually stopped">🛑 Cancelled</span>
+          </Show>
+          <Show when={props.run.completed !== true && !props.run.cancelled}>
+            <span class="text-yellow-400 text-xs" title="Run did not finish all questions">🚧 Incomplete</span>
+          </Show>
           <Show when={props.onDelete}>
             <button
               class="text-[var(--color-fg-muted)] hover:text-[var(--color-danger)] transition p-1 rounded"
@@ -201,6 +208,7 @@ export const ResultCard: Component<ResultCardProps> = props => {
 
       <Show when={isExpanded()}>
         <div class="border-t border-[var(--color-border)] p-5">
+          <IconLegend />
           <div class="flex items-center justify-between mb-4">
             <label class="flex items-center gap-2 text-xs text-[var(--color-fg-muted)]">
               Sort by:
@@ -263,6 +271,16 @@ const ModelRow: Component<ModelRowProps> = props => {
   const totalTimeouts = () =>
     props.result.details.filter(d => d.timed_out).length
 
+  // Questions that had API/network/other errors (excluding timeouts, which are counted separately)
+  const totalErrors = () =>
+    props.result.details.filter(d => d.error && !d.timed_out && !d.cancelled).length
+
+  const totalCancelled = () =>
+    props.result.details.filter(d => d.cancelled).length
+
+  const isIncomplete = () =>
+    props.result.completed !== undefined && props.result.completed < props.result.total
+
   return (
     <div class={`rounded-lg p-3 text-sm relative ${props.isBestAccuracy ? "best-row-shimmer" : ""}`}
          style="background: var(--color-card);">
@@ -297,6 +315,21 @@ const ModelRow: Component<ModelRowProps> = props => {
           <Show when={totalTimeouts() > 0}>
             <span class="text-[var(--color-danger)]" title={`${totalTimeouts()} question(s) timed out (60s)`}>
               ⏱{totalTimeouts()}
+            </span>
+          </Show>
+          <Show when={totalErrors() > 0}>
+            <span class="text-rose-400" title={`${totalErrors()} question(s) had API/network errors`}>
+              ✗!{totalErrors()}
+            </span>
+          </Show>
+          <Show when={totalCancelled() > 0}>
+            <span class="text-red-400" title={`${totalCancelled()} question(s) cancelled by user`}>
+              🛑{totalCancelled()}
+            </span>
+          </Show>
+          <Show when={isIncomplete()}>
+            <span class="text-yellow-400" title={`Only ${props.result.completed}/${props.result.total} questions finished`}>
+              🚧
             </span>
           </Show>
           <span class={scoreColor(props.result.passed, props.result.total)}>
@@ -343,6 +376,14 @@ const ModelRow: Component<ModelRowProps> = props => {
                   {d.timed_out ? (
                     <span class="text-[var(--color-danger)] w-8 text-center" title={`Timed out after ${d.retries || 0} retries`}>
                       ⏱
+                    </span>
+                  ) : d.cancelled ? (
+                    <span class="text-red-400 w-8 text-center" title="Cancelled by user">
+                      🛑
+                    </span>
+                  ) : d.error ? (
+                    <span class="text-rose-400 w-8 text-center" title={`Error: ${d.error}`}>
+                      ✗!
                     </span>
                   ) : d.retries && d.retries > 0 ? (
                     <span class="text-orange-400 w-8 text-center" title={`Retried ${d.retries} time(s)`}>

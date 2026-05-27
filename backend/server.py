@@ -296,6 +296,12 @@ async def delete_model(fid: str):
 test_queue: list[dict] = []
 test_results: list[dict] = []
 
+# Active test runs that can be cancelled. Key is run_id, value is an asyncio.Event
+# that fires when the run should stop. We use a dict instead of a set because
+# asyncio.Event lets workers wait/cooperate efficiently, and we can pass the event
+# down to each worker.
+active_runs: dict[str, asyncio.Event] = {}
+
 
 def _normalize(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
@@ -399,11 +405,26 @@ async def run_test(req: TestRunRequest):
     )
 
 
+@app.post("/api/test/cancel/{run_id}")
+async def cancel_run(run_id: str):
+    """Cancel a running test. The workers will stop before the next batch."""
+    event = active_runs.get(run_id)
+    if event is None:
+        return {"ok": False, "run_id": run_id, "reason": "Run not found or already finished"}
+    event.set()
+    return {"ok": True, "run_id": run_id}
+
+
 async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict],
                           cat_stats: dict[str, int], num_tests: int, profile: str, seed: int):
     global_semaphore = asyncio.Semaphore(100)
     progress_queue: asyncio.Queue = asyncio.Queue()
     results: dict[str, dict] = {}
+
+    # Register this run as cancellable. The event is set() when /api/test/cancel
+    # is called; workers watch it and break out of their loops early.
+    cancel_event = asyncio.Event()
+    active_runs[run_id] = cancel_event
 
     # Calculate per-model concurrency based on total models
     per_model_limit = min(5, max(1, 100 // len(targets)))
@@ -560,6 +581,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 "avg_latency_ms": 0,
                 "elapsed_ms": 0,
                 "details": [],
+                "error_count": 0,
                 "categories": {},
                 "completed": 0,
             }
@@ -577,13 +599,31 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
             cat_total: dict[str, int] = defaultdict(int)
             passed = 0
             completed = 0
+            error_count = 0
 
             for i in range(0, len(sampled), batch_size):
+                # Abort this model's remaining questions if the run was cancelled
+                if cancel_event.is_set():
+                    break
+
                 batch = sampled[i:i + batch_size]
                 tasks = []
                 for q in batch:
                     # Respect per-model semaphore
                     async def wrapped_task(q_item=q):
+                        if cancel_event.is_set():
+                            return {
+                                "prompt": q_item["question"][:120],
+                                "expected": q_item["answer"].strip(),
+                                "actual": None,
+                                "correct": False,
+                                "error": "Cancelled by user",
+                                "latency_ms": 0,
+                                "category": q_item.get("category", "common_science"),
+                                "retries": 0,
+                                "timed_out": False,
+                                "cancelled": True,
+                            }
                         async with model_semaphore:
                             return await test_single_question(client, model_info, provider, q_item)
                     tasks.append(wrapped_task())
@@ -596,6 +636,8 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                     if detail.get("correct"):
                         passed += 1
                         cat_passed[cat] += 1
+                    if detail.get("error"):
+                        error_count += 1
                     completed += 1
 
                 # Send progress update
@@ -607,6 +649,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                     "completed": completed,
                     "total": len(sampled),
                     "passed": passed,
+                    "error_count": error_count,
                 })
 
             # Calculate final stats
@@ -625,6 +668,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 "avg_latency_ms": avg_latency,
                 "elapsed_ms": worker_elapsed_ms,
                 "details": all_details,
+                "error_count": error_count,
                 "categories": {
                     cat: {"passed": cat_passed.get(cat, 0), "total": cat_total.get(cat, 0)}
                     for cat in cat_total
@@ -654,7 +698,14 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
     })
 
     completed_models = 0
+    cancelled = False
     while completed_models < len(targets):
+        if cancel_event.is_set() and not cancelled:
+            cancelled = True
+            # Cancel all in-flight model tasks so workers break out quickly
+            for t in model_tasks:
+                t.cancel()
+            await progress_queue.put({"type": "run_cancelled", "run_id": run_id})
         try:
             msg = await asyncio.wait_for(progress_queue.get(), timeout=0.1)
             yield f"data: {json.dumps(msg)}\n\n"
@@ -665,11 +716,18 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
             # Send heartbeat to keep connection alive
             yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
 
-    # Wait for all tasks to complete
-    await asyncio.gather(*model_tasks)
+    # Wait for all tasks to complete (or to be cancelled)
+    await asyncio.gather(*model_tasks, return_exceptions=True)
+
+    # Unregister the run from active_runs
+    active_runs.pop(run_id, None)
 
     # Build final result
     run_results = [results[t["id"]] for t in targets if t["id"] in results]
+
+    # Count actually-completed questions (cancelled ones count toward total but not answered)
+    answered = sum(r.get("completed", 0) for r in run_results)
+    total_questions = sum(r["total"] for r in run_results)
 
     final_result = {
         "run_id": run_id,
@@ -677,12 +735,14 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
         "results": run_results,
         "total_models": len(targets),
         "total_passed": sum(r["passed"] for r in run_results),
-        "total_questions": sum(r["total"] for r in run_results),
+        "total_questions": total_questions,
+        "total_answered": answered,
         "category_sampled": cat_stats,
         "num_tests": num_tests,
         "profile": profile,
         "seed": seed,
-        "completed": True,
+        "completed": not cancelled and answered == total_questions,
+        "cancelled": cancelled,
     }
 
     # Store in history

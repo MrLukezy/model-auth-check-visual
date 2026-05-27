@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "@solidjs/router"
 import { SolidApexCharts } from "solid-apexcharts"
 import { api, TestRun, ModelResult } from "../api"
 import { CAT_LABELS, formatElapsed, scoreColor } from "../components/ResultCard"
+import IconLegend from "../components/IconLegend"
 import "../components/score-colors.css"
 const DetailPage: Component = () => {
   const params = useParams<{ runId: string }>()
@@ -21,6 +22,7 @@ const DetailPage: Component = () => {
         >
           ← Back
         </button>
+        <IconLegend />
         <Show
           when={data()}
           fallback={

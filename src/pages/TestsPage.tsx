@@ -37,6 +37,7 @@ interface ModelProgress {
 const TestsPage: Component = () => {
   const [queue, setQueue] = createSignal<Model[]>([])
   const [running, setRunning] = createSignal(false)
+  const [stopping, setStopping] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [latestRun, setLatestRun] = createSignal<TestRun | null>(null)
   const [numTests, setNumTests] = createSignal(100)
@@ -45,6 +46,8 @@ const TestsPage: Component = () => {
   const [progress, setProgress] = createSignal<Record<string, ModelProgress>>({})
   const [runStartTime, setRunStartTime] = createSignal<number | null>(null)
   const [elapsed, setElapsed] = createSignal(0)
+  const [currentRunId, setCurrentRunId] = createSignal<string | null>(null)
+  let currentAbortController: AbortController | null = null
 
   const load = async (silent = false) => {
     try {
@@ -83,6 +86,7 @@ const TestsPage: Component = () => {
     setRunning(true)
     setError(null)
     setLatestRun(null)
+    setCurrentRunId(null)
 
     const initialProgress: Record<string, ModelProgress> = {}
     for (const m of q) {
@@ -107,6 +111,10 @@ const TestsPage: Component = () => {
       }
     }, 1000)
 
+    // Prepare an AbortController so stopTest() can cancel this request.
+    currentAbortController = new AbortController()
+    const signal = currentAbortController.signal
+
     try {
       const body = JSON.stringify({
         model_ids: q.map(m => m.id),
@@ -118,6 +126,7 @@ const TestsPage: Component = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
+        signal,
       })
 
       if (!res.ok || !res.body) {
@@ -130,7 +139,17 @@ const TestsPage: Component = () => {
       let buffer = ""
 
       while (true) {
-        const { done, value } = await reader.read()
+        let result: ReadableStreamReadResult<Uint8Array>
+        try {
+          result = await reader.read()
+        } catch (e: any) {
+          if (e?.name === "AbortError") {
+            try { await reader.cancel() } catch { /* noop */ }
+            break
+          }
+          throw e
+        }
+        const { done, value } = result
         if (done) break
         buffer += decoder.decode(value, { stream: true })
 
@@ -144,7 +163,9 @@ const TestsPage: Component = () => {
 
           try {
             const msg = JSON.parse(payload)
-            if (msg.type === "model_start") {
+            if (msg.type === "run_start") {
+              setCurrentRunId(msg.run_id)
+            } else if (msg.type === "model_start") {
               setProgress(prev => ({
                 ...prev,
                 [msg.full_id]: { ...prev[msg.full_id], started: true },
@@ -180,11 +201,30 @@ const TestsPage: Component = () => {
           }
         }
       }
-    } catch (e) {
-      setError(String(e))
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        // User stopped the test - not an error
+      } else {
+        setError(String(e))
+      }
     } finally {
       clearInterval(timer)
+      currentAbortController = null
+      setCurrentRunId(null)
+      setStopping(false)
       setRunning(false)
+    }
+  }
+
+  const handleStop = async () => {
+    const id = currentRunId()
+    setStopping(true)
+    if (id) {
+      try { await api.cancelRun(id) } catch { /* backend may already be closing */ }
+    }
+    // Abort the SSE stream on the client side as well
+    if (currentAbortController) {
+      try { currentAbortController.abort() } catch { /* noop */ }
     }
   }
 
@@ -284,21 +324,36 @@ const TestsPage: Component = () => {
           </select>
         </div>
 
-        <div class="flex items-center justify-between">
-          <div class="text-xs text-[var(--color-fg-muted)]">
+        <div class="flex items-center justify-between gap-3">
+          <div class="text-xs text-[var(--color-fg-muted)] flex-1 min-w-0">
             {running()
-              ? `Running... ${formatTime(elapsed())}`
+              ? `Running... ${formatTime(elapsed())}${stopping() ? " — stopping..." : ""}`
               : queue().length > 0
               ? `${numTests()} random questions × ${queue().length} model(s) — same questions for all models (parallel)`
               : "Add models to queue from Models page to start testing"}
           </div>
-          <button
-            class="bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white font-medium text-sm px-6 py-2 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={running() || queue().length === 0 || !bankStats()?.loaded}
-            onClick={handleRun}
-          >
-            {running() ? `Running (${formatTime(elapsed())})...` : `Run Test`}
-          </button>
+          <div class="flex items-center gap-2 shrink-0">
+            <Show when={running()}>
+              <button
+                class="bg-[var(--color-danger)] hover:bg-[var(--color-danger-hover)] text-white font-medium text-sm px-4 py-2 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                disabled={stopping()}
+                onClick={handleStop}
+                title="Stop the current test run"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="4" y="4" width="16" height="16" rx="2" />
+                </svg>
+                {stopping() ? "Stopping..." : "Stop"}
+              </button>
+            </Show>
+            <button
+              class="bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white font-medium text-sm px-6 py-2 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={running() || queue().length === 0 || !bankStats()?.loaded}
+              onClick={handleRun}
+            >
+              {running() ? `Running (${formatTime(elapsed())})...` : `Run Test`}
+            </button>
+          </div>
         </div>
       </div>
 

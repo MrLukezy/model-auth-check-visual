@@ -23,6 +23,7 @@ export interface PromptResult {
   category?: string
   retries?: number
   timed_out?: boolean
+  cancelled?: boolean
 }
 
 export interface CategoryStats {
@@ -40,7 +41,9 @@ export interface ModelResult {
   elapsed_ms?: number
   details: PromptResult[]
   error: string | null
+  error_count?: number
   categories?: Record<string, CategoryStats>
+  completed?: number
 }
 
 export interface TestRun {
@@ -50,10 +53,13 @@ export interface TestRun {
   total_models: number
   total_passed: number
   total_questions: number
+  total_answered?: number
   seed?: number
   profile?: string
   num_tests?: number
   category_sampled?: Record<string, number>
+  completed?: boolean
+  cancelled?: boolean
 }
 
 export interface BankStats {
@@ -122,6 +128,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ model_ids: ids, num_tests: numTests, profile, seed }),
     }, 120000),
+  cancelRun: (runId: string) =>
+    fetchJson<{ ok: boolean; run_id: string; reason?: string }>(`/api/test/cancel/${runId}`, {
+      method: "POST",
+    }),
   getResults: () => fetchJson<TestRun[]>("/api/test/results"),
   getResultById: (runId: string) => fetchJson<TestRun>(`/api/test/results/${runId}`),
   deleteResult: (runId: string) =>

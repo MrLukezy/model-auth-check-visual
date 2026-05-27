@@ -1,6 +1,7 @@
 import { Component, createSignal, onMount, onCleanup, For, Show } from "solid-js"
 import { api, TestRun } from "../api"
 import { ResultCard } from "../components/ResultCard"
+import IconLegend from "../components/IconLegend"
 import { usePolling } from "../hooks/usePolling"
 
 const RecordPage: Component = () => {
@@ -49,6 +50,8 @@ const RecordPage: Component = () => {
           Run History <span class="text-sm font-normal text-[var(--color-fg-muted)] ml-2">({runs().length})</span>
         </h1>
       </div>
+
+      <IconLegend />
 
       <Show when={error()}>
         <div class="text-[var(--color-danger)] text-sm mb-4">{error()}</div>
