@@ -1,4 +1,4 @@
-import { Component, createSignal, onMount, For, Show } from "solid-js"
+import { Component, createSignal, onMount, onCleanup, For, Show } from "solid-js"
 import { api, TestRun } from "../api"
 import { ResultCard, formatElapsed, scoreColor } from "../components/ResultCard"
 
@@ -10,19 +10,23 @@ const RecordPage: Component = () => {
   const [error, setError] = createSignal<string | null>(null)
   const [sort, setSort] = createSignal<ListSort>("time")
 
-  const load = async () => {
-    setLoading(true)
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       const r = await api.getResults()
       setRuns(r)
     } catch (e) {
       setError(String(e))
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
-  onMount(load)
+  onMount(() => load())
+  onMount(() => {
+    const pollId = setInterval(() => load(true), 5000)
+    onCleanup(() => clearInterval(pollId))
+  })
 
   const sortedRuns = () => {
     const arr = [...runs()]

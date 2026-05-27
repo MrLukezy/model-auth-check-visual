@@ -1,4 +1,4 @@
-import { Component, createSignal, onMount, For, Show } from "solid-js"
+import { Component, createSignal, onMount, onCleanup, For, Show } from "solid-js"
 import { api, Provider, Model } from "../api"
 import Dropdown from "../components/Dropdown"
 
@@ -28,6 +28,10 @@ const ModelsPage: Component = () => {
     }
   }
   onMount(load)
+  onMount(() => {
+    const pollId = setInterval(load, 3000)
+    onCleanup(() => clearInterval(pollId))
+  })
 
   const handleFetch = async (providerId: string, providerName: string) => {
     setFetching(true)
