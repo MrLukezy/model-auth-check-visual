@@ -31,6 +31,7 @@ export interface CategoryStats {
 }
 
 export interface ModelResult {
+  id?: string
   model_id: string
   provider_name: string
   passed: number
@@ -63,6 +64,29 @@ export interface BankStats {
 }
 
 const BASE = "http://localhost:8765"
+const MAX_CONCURRENT = 4
+const inFlight: Map<string, Promise<any>> = new Map()
+let openRequests = 0
+const waitQueue: Array<{ fn: () => void; slot: () => number }> = []
+
+function acquireSlot(): Promise<() => void> {
+  return new Promise((resolveAcquire) => {
+    const tryStart = () => {
+      if (openRequests < MAX_CONCURRENT) {
+        openRequests++
+        resolveAcquire(() => {
+          openRequests--
+          if (waitQueue.length > 0) {
+            waitQueue.shift()?.fn()
+          }
+        })
+      } else {
+        waitQueue.push({ fn: tryStart, slot: () => openRequests })
+      }
+    }
+    tryStart()
+  })
+}
 
 export const api = {
   health: () => fetchJson<{ status: string; bank_loaded: boolean; bank_size: number }>("/api/health"),
@@ -97,22 +121,53 @@ export const api = {
     fetchJson<TestRun>("/api/test/run", {
       method: "POST",
       body: JSON.stringify({ model_ids: ids, num_tests: numTests, profile, seed }),
-    }),
+    }, 120000),
   getResults: () => fetchJson<TestRun[]>("/api/test/results"),
   getResultById: (runId: string) => fetchJson<TestRun>(`/api/test/results/${runId}`),
   deleteResult: (runId: string) =>
     fetchJson<void>(`/api/test/results/${runId}`, { method: "DELETE" }),
 }
 
-async function fetchJson<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const res = await fetch(BASE + path, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  })
-  if (!res.ok) {
-    const text = await res.text().catch(() => "")
-    throw new Error(text ? `${res.status} ${text}` : `${res.status} ${res.statusText}`)
+async function fetchJson<T>(
+  path: string,
+  opts: RequestInit = {},
+  timeoutMs: number = 10000,
+): Promise<T> {
+  const cacheKey = `${opts.method || "GET"}:${path}:${(opts.body as string) || ""}`
+
+  // De-deduplicate identical in-flight requests (only for GET)
+  if (!opts.method || opts.method === "GET") {
+    const existing = inFlight.get(cacheKey)
+    if (existing) return existing as Promise<T>
   }
-  const text = await res.text()
-  return text ? (JSON.parse(text) as T) : (undefined as T)
+
+  const release = await acquireSlot()
+
+  const controller = new AbortController()
+  const timerId = window.setTimeout(() => controller.abort(), timeoutMs)
+
+  const promise = (async (): Promise<T> => {
+    try {
+      const res = await fetch(BASE + path, {
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        ...opts,
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => "")
+        throw new Error(text ? `${res.status} ${text}` : `${res.status} ${res.statusText}`)
+      }
+      const text = await res.text()
+      return text ? (JSON.parse(text) as T) : (undefined as T)
+    } finally {
+      window.clearTimeout(timerId)
+      release()
+      inFlight.delete(cacheKey)
+    }
+  })()
+
+  if (!opts.method || opts.method === "GET") {
+    inFlight.set(cacheKey, promise)
+  }
+  return promise
 }

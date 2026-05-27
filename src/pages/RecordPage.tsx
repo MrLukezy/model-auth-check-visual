@@ -1,6 +1,7 @@
 import { Component, createSignal, onMount, onCleanup, For, Show } from "solid-js"
 import { api, TestRun } from "../api"
 import { ResultCard } from "../components/ResultCard"
+import { usePolling } from "../hooks/usePolling"
 
 const RecordPage: Component = () => {
   const [runs, setRuns] = createSignal<TestRun[]>([])
@@ -38,10 +39,7 @@ const RecordPage: Component = () => {
   }
 
   onMount(() => load())
-  onMount(() => {
-    const pollId = setInterval(() => load(true), 5000)
-    onCleanup(() => clearInterval(pollId))
-  })
+  usePolling(() => load(true), 8000)
 
   return (
     <div>

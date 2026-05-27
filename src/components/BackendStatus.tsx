@@ -6,18 +6,53 @@ const BackendStatus: Component = () => {
   const [attempts, setAttempts] = createSignal(0)
 
   onMount(() => {
+    let slowMode = false
+
     const check = async () => {
       try {
         await api.health()
-        setOk(true)
+        if (!ok()) {
+          setOk(true)
+          setAttempts(0)
+          // Switch to slower polling once connected (less resource pressure)
+          slowMode = true
+          clearInterval(id)
+          id = window.setInterval(check, 15000)
+        }
       } catch {
         setOk(false)
         setAttempts(a => a + 1)
+        // When disconnected, speed back up to detect recovery quickly
+        if (slowMode) {
+          slowMode = false
+          clearInterval(id)
+          id = window.setInterval(check, 3000)
+        }
       }
     }
+
     check()
-    const id = setInterval(check, 3000)
-    onCleanup(() => clearInterval(id))
+    let id = window.setInterval(check, 3000)
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        // Tab hidden: slow everything down aggressively
+        clearInterval(id)
+        id = window.setInterval(check, 30000)
+      } else if (ok()) {
+        clearInterval(id)
+        id = window.setInterval(check, 15000)
+      } else {
+        clearInterval(id)
+        id = window.setInterval(check, 3000)
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange)
+
+    onCleanup(() => {
+      clearInterval(id)
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+    })
   })
 
   return (

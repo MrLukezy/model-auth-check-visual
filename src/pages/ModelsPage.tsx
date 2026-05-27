@@ -1,6 +1,7 @@
 import { Component, createSignal, onMount, onCleanup, For, Show } from "solid-js"
 import { api, Provider, Model } from "../api"
 import Dropdown from "../components/Dropdown"
+import { usePolling } from "../hooks/usePolling"
 
 const ModelsPage: Component = () => {
   const [providers, setProviders] = createSignal<Provider[]>([])
@@ -28,10 +29,7 @@ const ModelsPage: Component = () => {
     }
   }
   onMount(load)
-  onMount(() => {
-    const pollId = setInterval(load, 3000)
-    onCleanup(() => clearInterval(pollId))
-  })
+  usePolling(load, 5000)
 
   const handleFetch = async (providerId: string, providerName: string) => {
     setFetching(true)

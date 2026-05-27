@@ -1,6 +1,7 @@
 import { Component, createSignal, onMount, onCleanup, For, Show, Index } from "solid-js"
 import { api, Model, TestRun, BankStats } from "../api"
 import { ResultCard, formatElapsed, scoreColor, scoreBgColor } from "../components/ResultCard"
+import { usePolling } from "../hooks/usePolling"
 
 const PROFILES_LIST = [
   { value: "programmer", label: "Programmer", desc: "CS25%+Math20%+Logic20%+Game15%+Safety10%+Common10%" },
@@ -73,10 +74,7 @@ const TestsPage: Component = () => {
     }
   }
   onMount(load)
-  onMount(() => {
-    const pollId = setInterval(load, 3000)
-    onCleanup(() => clearInterval(pollId))
-  })
+  usePolling(load, 5000)
 
   const handleRun = async () => {
     const q = queue()
