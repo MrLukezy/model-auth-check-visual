@@ -512,15 +512,21 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
             }
 
     async def test_model_worker(model_info: dict, model_semaphore: asyncio.Semaphore):
+        # full_id is the unique key "provider_id:model_id" so that models with the
+        # same name from different providers don't collide in the result dict or
+        # the progress stream.
+        full_id = model_info["id"]
         model_id = model_info["model_id"]
+        provider_name = model_info.get("provider_name", "unknown")
         provider_id = model_info.get("provider_id")
         provider = providers.get(provider_id)
         worker_start_time = time.perf_counter()
 
         if not provider:
             result = {
+                "id": full_id,
                 "model_id": model_id,
-                "provider_name": "unknown",
+                "provider_name": provider_name,
                 "error": "Provider not found",
                 "passed": 0,
                 "total": len(sampled),
@@ -530,11 +536,11 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 "categories": {},
                 "completed": 0,
             }
-            results[model_id] = result
-            await progress_queue.put({"type": "model_complete", "model_id": model_id, "result": result})
+            results[full_id] = result
+            await progress_queue.put({"type": "model_complete", "full_id": full_id, "model_id": model_id, "result": result})
             return
 
-        await progress_queue.put({"type": "model_start", "model_id": model_id})
+        await progress_queue.put({"type": "model_start", "full_id": full_id, "model_id": model_id, "provider_name": provider_name})
 
         async with httpx.AsyncClient(timeout=60) as client:
             # Process questions in batches
@@ -568,7 +574,9 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 # Send progress update
                 await progress_queue.put({
                     "type": "model_progress",
+                    "full_id": full_id,
                     "model_id": model_id,
+                    "provider_name": provider_name,
                     "completed": completed,
                     "total": len(sampled),
                     "passed": passed,
@@ -582,6 +590,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
             worker_elapsed_ms = (time.perf_counter() - worker_start_time) * 1000
 
             result = {
+                "id": full_id,
                 "model_id": model_id,
                 "provider_name": model_info.get("provider_name", provider.get("name", "unknown")),
                 "passed": passed,
@@ -596,8 +605,8 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 "error": None,
                 "completed": completed,
             }
-            results[model_id] = result
-            await progress_queue.put({"type": "model_complete", "model_id": model_id, "result": result})
+            results[full_id] = result
+            await progress_queue.put({"type": "model_complete", "full_id": full_id, "model_id": model_id, "result": result})
 
     # Create per-model semaphores
     model_tasks = []
@@ -633,7 +642,7 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
     await asyncio.gather(*model_tasks)
 
     # Build final result
-    run_results = [results[t["model_id"]] for t in targets if t["model_id"] in results]
+    run_results = [results[t["id"]] for t in targets if t["id"] in results]
 
     final_result = {
         "run_id": run_id,

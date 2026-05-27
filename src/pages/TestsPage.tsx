@@ -22,7 +22,9 @@ const CAT_LABELS: Record<string, string> = {
 }
 
 interface ModelProgress {
+  id: string
   model_id: string
+  provider_name: string
   started: boolean
   done: boolean
   completed: number
@@ -85,8 +87,10 @@ const TestsPage: Component = () => {
 
     const initialProgress: Record<string, ModelProgress> = {}
     for (const m of q) {
-      initialProgress[m.model_id] = {
+      initialProgress[m.id] = {
+        id: m.id,
         model_id: m.model_id,
+        provider_name: m.provider_name,
         started: false,
         done: false,
         completed: 0,
@@ -144,13 +148,13 @@ const TestsPage: Component = () => {
             if (msg.type === "model_start") {
               setProgress(prev => ({
                 ...prev,
-                [msg.model_id]: { ...prev[msg.model_id], started: true },
+                [msg.full_id]: { ...prev[msg.full_id], started: true },
               }))
             } else if (msg.type === "model_progress") {
               setProgress(prev => ({
                 ...prev,
-                [msg.model_id]: {
-                  ...prev[msg.model_id],
+                [msg.full_id]: {
+                  ...prev[msg.full_id],
                   started: true,
                   completed: msg.completed,
                   passed: msg.passed,
@@ -160,8 +164,8 @@ const TestsPage: Component = () => {
             } else if (msg.type === "model_complete") {
               setProgress(prev => ({
                 ...prev,
-                [msg.model_id]: {
-                  ...prev[msg.model_id],
+                [msg.full_id]: {
+                  ...prev[msg.full_id],
                   done: true,
                   completed: msg.result.total,
                   passed: msg.result.passed,
@@ -313,7 +317,7 @@ const TestsPage: Component = () => {
                 <div class="flex flex-col gap-1.5">
                   <div class="flex items-center justify-between text-xs">
                     <div class="flex items-center gap-2">
-                      <span class="font-medium">{p.model_id}</span>
+                      <span class="font-medium">{p.provider_name}: {p.model_id}</span>
                       <Show when={!p.started}>
                         <span class="text-[var(--color-fg-muted)]">waiting...</span>
                       </Show>
