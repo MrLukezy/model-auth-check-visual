@@ -1,4 +1,5 @@
 import { Component, createSignal, For, Show } from "solid-js"
+import { useNavigate } from "@solidjs/router"
 import { TestRun, ModelResult } from "../api"
 import { uiState, setUiState } from "../store"
 import "./score-colors.css"
@@ -60,7 +61,14 @@ export function sortResults(
 
 export { CAT_LABELS }
 
-export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = props => {
+interface ResultCardProps {
+  run: TestRun
+  highlight?: boolean
+  onDelete?: (runId: string) => void
+}
+
+export const ResultCard: Component<ResultCardProps> = props => {
+  const navigate = useNavigate()
   const isExpanded = () => uiState.expandedRuns[props.run.run_id] || false
   const sortBy = () => uiState.sortRuns[props.run.run_id] || "accuracy"
 
@@ -71,7 +79,20 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
 
   const sorted = () => sortResults(props.run.results, sortBy())
 
-  const toggleExpanded = (e: Event) => {
+  // Find the fastest model in this run (by total elapsed_ms)
+  const fastestModelId = () => {
+    const results = props.run.results
+    if (!results || results.length === 0) return null
+    let fastest = results[0]
+    for (const r of results) {
+      if ((r.elapsed_ms || 0) > 0 && (r.elapsed_ms || 0) < (fastest.elapsed_ms || Infinity)) {
+        fastest = r
+      }
+    }
+    return fastest?.model_id || null
+  }
+
+  const toggleExpanded = () => {
     setUiState('expandedRuns', props.run.run_id, v => !v)
   }
 
@@ -81,8 +102,12 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
 
   const openDetail = (e: Event) => {
     e.stopPropagation()
-    const baseUrl = window.location.origin + window.location.pathname
-    window.open(`${baseUrl}#/detail/${props.run.run_id}`, "_blank")
+    navigate(`/detail/${props.run.run_id}`)
+  }
+
+  const handleDelete = (e: Event) => {
+    e.stopPropagation()
+    props.onDelete?.(props.run.run_id)
   }
 
   return (
@@ -118,10 +143,24 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
           </Show>
         </div>
 
-        <div class="flex items-center gap-4 shrink-0">
+        <div class="flex items-center gap-3 shrink-0">
           <span class={scoreColor(props.run.total_passed, props.run.total_questions)}>
             {props.run.total_passed}/{props.run.total_questions} ({pct()}%)
           </span>
+          <Show when={props.onDelete}>
+            <button
+              class="text-[var(--color-fg-muted)] hover:text-[var(--color-danger)] transition p-1 rounded"
+              onClick={handleDelete}
+              title="Delete this test run"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6l-2 14a2 2 0 01-2 2H9a2 2 0 01-2-2L5 6" />
+                <path d="M10 11v6M14 11v6" />
+                <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" />
+              </svg>
+            </button>
+          </Show>
           <span class="text-[var(--color-fg-muted)]">{isExpanded() ? "▼" : "▶"}</span>
         </div>
       </div>
@@ -151,7 +190,7 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
 
           <div class="flex flex-col gap-2">
             <For each={sorted()}>
-              {r => <ModelRow result={r} />}
+              {r => <ModelRow result={r} isFastest={r.model_id === fastestModelId()} />}
             </For>
           </div>
         </div>
@@ -160,7 +199,12 @@ export const ResultCard: Component<{ run: TestRun; highlight?: boolean }> = prop
   )
 }
 
-const ModelRow: Component<{ result: ModelResult }> = props => {
+interface ModelRowProps {
+  result: ModelResult
+  isFastest?: boolean
+}
+
+const ModelRow: Component<ModelRowProps> = props => {
   const [expanded, setExpanded] = createSignal(false)
 
   const totalRetries = () =>
@@ -172,7 +216,10 @@ const ModelRow: Component<{ result: ModelResult }> = props => {
         class="flex items-center justify-between cursor-pointer"
         onClick={() => setExpanded(!expanded())}
       >
-        <div>
+        <div class="flex items-center gap-2">
+          <Show when={props.isFastest}>
+            <span class="text-[var(--color-accent)] text-sm" title="Fastest model">⚡</span>
+          </Show>
           <span class="font-medium">{props.result.model_id}</span>
           <span class="text-[var(--color-fg-muted)] text-xs ml-2">{props.result.provider_name}</span>
         </div>
@@ -186,8 +233,8 @@ const ModelRow: Component<{ result: ModelResult }> = props => {
             {props.result.avg_latency_ms.toFixed(0)}ms avg
           </span>
           <Show when={totalRetries() > 0}>
-            <span class="text-[var(--color-accent)]" title={`Total retries: ${totalRetries()}`}>
-              ⚡{totalRetries()}
+            <span class="text-orange-400" title={`Retried ${totalRetries()} time(s) total`}>
+              🔄{totalRetries()}
             </span>
           </Show>
           <span class={scoreColor(props.result.passed, props.result.total)}>
@@ -232,8 +279,8 @@ const ModelRow: Component<{ result: ModelResult }> = props => {
                     {d.latency_ms.toFixed(0)}ms
                   </span>
                   {d.retries && d.retries > 0 ? (
-                    <span class="text-[var(--color-accent)] w-8 text-right" title={`Retried ${d.retries} time(s)`}>
-                      ⚡{d.retries}
+                    <span class="text-orange-400 w-8 text-right" title={`Retried ${d.retries} time(s)`}>
+                      🔄{d.retries}
                     </span>
                   ) : (
                     <span class="w-8" />
@@ -251,3 +298,5 @@ const ModelRow: Component<{ result: ModelResult }> = props => {
     </div>
   )
 }
+
+export default ResultCard

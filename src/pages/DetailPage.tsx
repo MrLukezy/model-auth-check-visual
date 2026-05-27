@@ -1,10 +1,11 @@
 import { Component, createResource, Show, For } from "solid-js"
-import { useParams } from "@solidjs/router"
+import { useParams, useNavigate } from "@solidjs/router"
 import { SolidApexCharts } from "solid-apexcharts"
 import { api, TestRun, ModelResult } from "../api"
 import { CAT_LABELS, formatElapsed, scoreColor } from "../components/ResultCard"
 const DetailPage: Component = () => {
   const params = useParams<{ runId: string }>()
+  const navigate = useNavigate()
   const [data] = createResource(async () => {
     const r = await api.getResultById(params.runId)
     return r as TestRun | null
@@ -13,6 +14,12 @@ const DetailPage: Component = () => {
   return (
     <div class="min-h-screen bg-[var(--color-bg)] text-[var(--color-fg)] p-8">
       <div class="max-w-7xl mx-auto">
+        <button
+          onClick={() => navigate(-1)}
+          class="mb-4 text-sm text-[var(--color-accent)] hover:text-[var(--color-accent-hover)] transition flex items-center gap-1"
+        >
+          ← Back
+        </button>
         <Show
           when={data()}
           fallback={
@@ -34,6 +41,18 @@ const RunDetail: Component<{ run: TestRun }> = props => {
     run().total_questions > 0
       ? Math.round((run().total_passed / run().total_questions) * 100)
       : 0
+
+  const fastestModelId = () => {
+    const results = run().results
+    if (!results || results.length === 0) return null
+    let fastest = results[0]
+    for (const r of results) {
+      if ((r.elapsed_ms || 0) > 0 && (r.elapsed_ms || 0) < (fastest.elapsed_ms || Infinity)) {
+        fastest = r
+      }
+    }
+    return fastest?.model_id || null
+  }
 
   const providers = (): { name: string; results: ModelResult[] }[] => {
     const map = new Map<string, ModelResult[]>()
@@ -194,7 +213,14 @@ const RunDetail: Component<{ run: TestRun }> = props => {
               >
                 {r => (
                   <tr class="border-t border-[var(--color-border)] hover:bg-[var(--color-card)]/30">
-                    <td class="px-4 py-3 font-medium">{r.model_id}</td>
+                    <td class="px-4 py-3 font-medium">
+                      <div class="flex items-center gap-1">
+                        <Show when={r.model_id === fastestModelId()}>
+                          <span class="text-[var(--color-accent)]" title="Fastest model">⚡</span>
+                        </Show>
+                        {r.model_id}
+                      </div>
+                    </td>
                     <td class="px-4 py-3 text-[var(--color-fg-muted)] text-xs">{r.provider_name}</td>
                     <td class={`px-4 py-3 text-right font-semibold ${scoreColor(r.passed, r.total)}`}>
                       {r.total > 0 ? `${Math.round((r.passed / r.total) * 100)}%` : "-"}
@@ -212,7 +238,7 @@ const RunDetail: Component<{ run: TestRun }> = props => {
                       {(() => {
                         const rt = r.details.reduce((sum, d) => sum + (d.retries || 0), 0)
                         return rt > 0 ? (
-                          <span class="text-[var(--color-accent)]">⚡{rt}</span>
+                          <span class="text-orange-400">🔄{rt}</span>
                         ) : (
                           <span class="text-[var(--color-fg-muted)]">0</span>
                         )
@@ -246,7 +272,12 @@ const RunDetail: Component<{ run: TestRun }> = props => {
                 <For each={group.results}>
                   {r => (
                     <div class="flex items-center justify-between">
-                      <span>{r.model_id}</span>
+                      <div class="flex items-center gap-1">
+                        <Show when={r.model_id === fastestModelId()}>
+                          <span class="text-[var(--color-accent)]" title="Fastest model">⚡</span>
+                        </Show>
+                        <span>{r.model_id}</span>
+                      </div>
                       <span class={scoreColor(r.passed, r.total)}>
                         {r.total > 0 ? `${Math.round((r.passed / r.total) * 100)}%` : "-"}
                         <span class="text-xs text-[var(--color-fg-muted)] ml-2">

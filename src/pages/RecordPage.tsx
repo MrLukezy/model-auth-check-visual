@@ -1,14 +1,11 @@
 import { Component, createSignal, onMount, onCleanup, For, Show } from "solid-js"
 import { api, TestRun } from "../api"
-import { ResultCard, formatElapsed, scoreColor } from "../components/ResultCard"
-
-type ListSort = "time" | "accuracy" | "elapsed"
+import { ResultCard } from "../components/ResultCard"
 
 const RecordPage: Component = () => {
   const [runs, setRuns] = createSignal<TestRun[]>([])
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
-  const [sort, setSort] = createSignal<ListSort>("time")
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true)
@@ -30,31 +27,21 @@ const RecordPage: Component = () => {
     return runs.map(r => `${r.run_id}:${r.timestamp}:${r.total_passed}`).join('|')
   }
 
+  const handleDelete = async (runId: string) => {
+    if (!confirm(`Delete test run ${runId}? This cannot be undone.`)) return
+    try {
+      await api.deleteResult(runId)
+      setRuns(prev => prev.filter(r => r.run_id !== runId))
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   onMount(() => load())
   onMount(() => {
     const pollId = setInterval(() => load(true), 5000)
     onCleanup(() => clearInterval(pollId))
   })
-
-  const sortedRuns = () => {
-    const arr = [...runs()]
-    if (sort() === "accuracy") {
-      arr.sort((a, b) => {
-        const pa = a.total_questions > 0 ? a.total_passed / a.total_questions : 0
-        const pb = b.total_questions > 0 ? b.total_passed / b.total_questions : 0
-        return pb - pa
-      })
-    } else if (sort() === "elapsed") {
-      arr.sort((a, b) => {
-        const ea = a.results.reduce((s, r) => s + (r.elapsed_ms || 0), 0)
-        const eb = b.results.reduce((s, r) => s + (r.elapsed_ms || 0), 0)
-        return ea - eb
-      })
-    } else {
-      arr.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-    }
-    return arr
-  }
 
   return (
     <div>
@@ -62,18 +49,6 @@ const RecordPage: Component = () => {
         <h1 class="text-2xl font-bold">
           Run History <span class="text-sm font-normal text-[var(--color-fg-muted)] ml-2">({runs().length})</span>
         </h1>
-        <label class="flex items-center gap-2 text-sm text-[var(--color-fg-muted)]">
-          Sort by:
-          <select
-            class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] transition"
-            value={sort()}
-            onChange={e => setSort(e.currentTarget.value as ListSort)}
-          >
-            <option value="time">Run Time</option>
-            <option value="accuracy">Accuracy (desc)</option>
-            <option value="elapsed">Total Elapsed (asc)</option>
-          </select>
-        </label>
       </div>
 
       <Show when={error()}>
@@ -91,8 +66,8 @@ const RecordPage: Component = () => {
       </Show>
 
       <Show when={!loading() && runs().length > 0}>
-        <For each={sortedRuns()}>
-          {run => <ResultCard run={run} />}
+        <For each={runs()}>
+          {run => <ResultCard run={run} onDelete={handleDelete} />}
         </For>
       </Show>
     </div>

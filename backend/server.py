@@ -669,6 +669,17 @@ async def get_run(run_id: str):
     raise HTTPException(404, "Run not found")
 
 
+@app.delete("/api/test/results/{run_id}")
+async def delete_run(run_id: str):
+    global test_results
+    before = len(test_results)
+    test_results = [r for r in test_results if r["run_id"] != run_id]
+    if len(test_results) == before:
+        raise HTTPException(404, "Run not found")
+    _save_results()
+    return {"ok": True, "run_id": run_id}
+
+
 @app.get("/api/health")
 async def health():
     bank_total = sum(len(v) for v in question_bank.values())

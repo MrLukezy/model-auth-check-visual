@@ -99,6 +99,8 @@ export const api = {
     }),
   getResults: () => fetchJson<TestRun[]>("/api/test/results"),
   getResultById: (runId: string) => fetchJson<TestRun>(`/api/test/results/${runId}`),
+  deleteResult: (runId: string) =>
+    fetchJson<void>(`/api/test/results/${runId}`, { method: "DELETE" }),
 }
 
 async function fetchJson<T>(path: string, opts: RequestInit = {}): Promise<T> {
