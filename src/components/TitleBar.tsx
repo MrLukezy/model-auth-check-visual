@@ -29,7 +29,7 @@ const TitleBar: Component<TitleBarProps> = props => {
               <path d="M12 6v6l4 2" />
             </svg>
             <span class="font-mono text-sm text-[var(--color-gold)]">
-              {props.title || "Model Auth Check"}
+              {props.title || "Real-O-Meter"}
             </span>
           </>
         )}

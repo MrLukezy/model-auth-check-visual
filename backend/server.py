@@ -150,7 +150,7 @@ def _sample_questions(
     return sampled[:total], stats
 
 
-app = FastAPI(title="Model Auth Check Server")
+app = FastAPI(title="Real-O-Meter API · 模型测试器")
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,4 +1,4 @@
-# Model Auth Check - Visual Tool
+# Real-O-Meter · 模型测试器
 
 基于 **Tauri v2 + SolidJS + Python FastAPI** 的可视化模型评测工具。
 
