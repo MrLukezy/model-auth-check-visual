@@ -11,6 +11,19 @@ const BackendStatus: Component = () => {
     let slowMode = false
 
     const check = async () => {
+      // When a test is running, the SSE stream proves the backend is alive.
+      // Health-check polling during tests is pointless AND wasteful — it
+      // consumes a concurrent HTTP connection slot (browsers limit to 6
+      // connections per host), competing with the SSE stream and other
+      // polling requests, causing spurious timeouts.
+      if (testRunState.running) {
+        // Keep the backend state as "connected" since SSE is alive.
+        // Reset failure counters so that when the test ends we start fresh.
+        if (!ok()) setOk(true)
+        setConsecutiveFailures(0)
+        return
+      }
+
       try {
         await api.health()
         if (!ok()) {
@@ -29,19 +42,26 @@ const BackendStatus: Component = () => {
         const failures = consecutiveFailures() + 1
         setConsecutiveFailures(failures)
 
-        // Flap protection: require 3+ consecutive failures before flipping UI
+        // When a test is running, the SSE stream is alive — the backend is
+        // clearly not dead. Health-check timeouts during test runs are
+        // transient (event loop saturation from 9 concurrent model workers).
+        // We require many more consecutive failures before showing "disconnected".
+        const isBusy = testRunState.running
+        const threshold = isBusy ? 15 : 3
+
+        // Flap protection: require N+ consecutive failures before flipping UI
         // to "disconnected". During massive test runs, uvicorn's event loop
         // can be saturated, causing brief health-check timeouts even though
         // the backend is alive and processing — we don't want to mislead
         // the user into thinking the server died.
-        if (failures >= 3) {
+        if (failures >= threshold) {
           setOk(false)
         } else if (ok() === null) {
           // First-ever check failed - show as not connected
           setOk(false)
         }
         // When really disconnected, speed back up to detect recovery quickly
-        if (failures >= 3 && slowMode) {
+        if (failures >= threshold && slowMode) {
           slowMode = false
           clearInterval(id)
           id = window.setInterval(check, 3000)
@@ -84,10 +104,17 @@ const BackendStatus: Component = () => {
         when={ok() === true}
         fallback={
           <>
-            <span class="w-2 h-2 rounded-full bg-[var(--color-danger)] animate-pulse" />
-            <span class="text-[var(--color-ink-1)]">
-              {attempts() === 0 ? "Checking..." : "Backend starting..."}
-            </span>
+            <Show when={isTesting()} fallback={
+              <>
+                <span class="w-2 h-2 rounded-full bg-[var(--color-danger)] animate-pulse" />
+                <span class="text-[var(--color-ink-1)]">
+                  {attempts() === 0 ? "Checking..." : "Backend starting..."}
+                </span>
+              </>
+            }>
+              <span class="w-2 h-2 rounded-full bg-[var(--color-gold)] shadow-[0_0_6px_var(--color-gold)] animate-pulse" />
+              <span class="text-[var(--color-ink-1)]">Testing (server busy)</span>
+            </Show>
           </>
         }
       >

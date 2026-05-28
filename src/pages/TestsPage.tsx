@@ -50,6 +50,11 @@ const TestsPage: Component = () => {
   let currentAbortController: AbortController | null = null
 
   const load = async (silent = false) => {
+    // Skip polling during test runs — the SSE stream provides live data,
+    // and additional HTTP requests waste browser connection slots
+    // (browsers limit to 6 per host, competing with the SSE stream).
+    if (running()) return
+
     try {
       const [q, r, b] = await Promise.all([api.getQueue(), api.getResults(), api.getBankStats()])
 

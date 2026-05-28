@@ -19,19 +19,25 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Set up logging - write to both console and a file so we can always see
-# what's happening during long test runs, even when the UI shows
-# "Backend starting..."
+# Set up logging - write ONLY to file. StreamHandler (stderr) is deliberately
+# removed because this process runs as a Tauri subprocess, and excessive
+# stderr output from httpx's own INFO-level HTTP logging (~4000 lines per run)
+# fills the pipe buffer, blocking the event loop and killing the process.
 LOG_PATH = Path(__file__).parent / "server.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.StreamHandler(),
         logging.FileHandler(LOG_PATH, encoding="utf-8", mode="a"),
     ],
 )
 log = logging.getLogger("test-server")
+
+# Disable httpx's verbose HTTP request/response logging. Each request logs
+# 2 lines (sent + received), which at 180 req/s creates ~360 stderr lines/s.
+# In a Tauri subprocess, the stderr pipe buffer is limited and can block.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 DATA_PATH = Path(__file__).parent / "data.json"
 RESULTS_PATH = Path(__file__).parent / "results.json"
@@ -537,28 +543,40 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 "timed_out": True,
             }
 
-        async with global_semaphore:
-            start = time.perf_counter()
-            last_error = None
+        start = time.perf_counter()
+        last_error = None
 
-            for attempt in range(max_retries):
-                # Check cancellation at start of each retry
-                if cancel_event.is_set():
-                    return _cancelled_result(attempt)
+        for attempt in range(max_retries):
+            # Check cancellation at start of each retry
+            if cancel_event.is_set():
+                return _cancelled_result(attempt)
 
-                # Check total elapsed against total timeout
-                elapsed_s = time.perf_counter() - start
-                remaining_s = total_timeout_s - elapsed_s
-                if remaining_s <= 1.0:
-                    return _timeout_result(attempt, f"Total timeout ({total_timeout_s:.0f}s)")
+            # Check total elapsed against total timeout
+            elapsed_s = time.perf_counter() - start
+            remaining_s = total_timeout_s - elapsed_s
+            if remaining_s <= 1.0:
+                return _timeout_result(attempt, f"Total timeout ({total_timeout_s:.0f}s)")
 
-                per_attempt_timeout = min(30.0, remaining_s - 0.5)
-                if per_attempt_timeout < 2.0:
-                    per_attempt_timeout = 2.0
+            per_attempt_timeout = min(30.0, remaining_s - 0.5)
+            if per_attempt_timeout < 2.0:
+                per_attempt_timeout = 2.0
 
-                req_id = run_diagnostics["requests_total"]
-                run_diagnostics["requests_total"] += 1
-                full_id = model_info["id"]
+            req_id = run_diagnostics["requests_total"]
+            run_diagnostics["requests_total"] += 1
+            full_id = model_info["id"]
+
+            # Acquire semaphore only during the actual HTTP request,
+            # NOT during retry sleep between attempts.
+            sem_wait_start = time.perf_counter()
+            async with global_semaphore:
+                sem_wait_s = time.perf_counter() - sem_wait_start
+                if sem_wait_s > 1.0:
+                    sem_avail = getattr(global_semaphore, "_value", "?")
+                    log.warning(
+                        "[sem] %s waited %.2fs for global_semaphore (avail=%s, in_flight ~%d)",
+                        model_id, sem_wait_s, sem_avail,
+                        150 - sem_avail if isinstance(sem_avail, int) else -1,
+                    )
                 state = run_diagnostics["model_state"].get(full_id)
                 if state is not None:
                     state["last_activity"] = time.time()
@@ -583,51 +601,64 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                         timeout=per_attempt_timeout,
                     )
                 except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.TimeoutException) as e:
-                    # Per-attempt timeout: check if total time budget still available
                     log.warning("[req %d] %s timeout exception: %s (%.2fs elapsed)",
                                 req_id, model_id, e, time.perf_counter() - start)
                     run_diagnostics["requests_failed"] += 1
                     run_diagnostics["last_heartbeat"] = time.time()
                     if state is not None:
                         state["in_flight"] = max(0, state.get("in_flight", 1) - 1)
-                    if cancel_event.is_set():
-                        return _cancelled_result(attempt + 1)
-                    last_error = f"Timeout ({per_attempt_timeout:.0f}s)"
-                    total_elapsed = time.perf_counter() - start
-                    if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
-                        return _timeout_result(
-                            attempt,
-                            f"Total timeout ({total_timeout_s:.0f}s)"
-                            if total_elapsed >= total_timeout_s
-                            else f"Timeout ({per_attempt_timeout:.0f}s)",
-                        )
-                    # Interruptible sleep during retry backoff
-                    sleep_total = 0.5 * (attempt + 1)
-                    sleep_step = 0.1
-                    while sleep_total > 0 and not cancel_event.is_set():
-                        await asyncio.sleep(min(sleep_step, sleep_total))
-                        sleep_total -= sleep_step
-                    if cancel_event.is_set():
-                        return _cancelled_result(attempt + 1)
-                    continue
                 except httpx.HTTPError as e:
                     log.warning("[req %d] %s HTTPError: %s", req_id, model_id, e)
                     run_diagnostics["requests_failed"] += 1
                     run_diagnostics["last_heartbeat"] = time.time()
                     if state is not None:
                         state["in_flight"] = max(0, state.get("in_flight", 1) - 1)
-                    if cancel_event.is_set():
-                        return _cancelled_result(attempt + 1)
-                    last_error = str(e)
-                    total_elapsed = time.perf_counter() - start
-                    if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
-                        return _timeout_result(
-                            attempt,
-                            f"Total timeout ({total_timeout_s:.0f}s)"
-                            if total_elapsed >= total_timeout_s
-                            else last_error,
-                        )
-                    # Interruptible sleep during retry backoff
+                else:
+                    run_diagnostics["last_heartbeat"] = time.time()
+                    if state is not None:
+                        state["in_flight"] = max(0, state.get("in_flight", 1) - 1)
+            # --- semaphore released at this point ---
+
+            # After semaphore release: process any exception or response
+            if r is None:
+                # Exception occurred inside semaphore
+                if cancel_event.is_set():
+                    return _cancelled_result(attempt + 1)
+                last_error = f"Timeout ({per_attempt_timeout:.0f}s)"
+                total_elapsed = time.perf_counter() - start
+                if total_elapsed >= total_timeout_s or attempt >= max_retries - 1:
+                    return _timeout_result(
+                        attempt,
+                        f"Total timeout ({total_timeout_s:.0f}s)"
+                        if total_elapsed >= total_timeout_s
+                        else f"Timeout ({per_attempt_timeout:.0f}s)",
+                    )
+                # Interruptible sleep (semaphore NOT held)
+                sleep_total = 0.5 * (attempt + 1)
+                sleep_step = 0.1
+                while sleep_total > 0 and not cancel_event.is_set():
+                    await asyncio.sleep(min(sleep_step, sleep_total))
+                    sleep_total -= sleep_step
+                if cancel_event.is_set():
+                    return _cancelled_result(attempt + 1)
+                continue
+
+            log.info("[req %d] %s status=%d (took %.2fs)",
+                     req_id, model_id, r.status_code,
+                     time.perf_counter() - start)
+
+            if cancel_event.is_set():
+                return _cancelled_result(attempt)
+
+            # 如果状态码不是 200，记录错误并继续重试
+            if r.status_code != 200:
+                last_error = f"HTTP {r.status_code}"
+                log.warning("[req %d] %s HTTP error %d body=%s",
+                            req_id, model_id, r.status_code,
+                            (r.text or "")[:500])
+                run_diagnostics["requests_failed"] += 1
+                if attempt < max_retries - 1:
+                    # Sleep (semaphore NOT held)
                     sleep_total = 0.5 * (attempt + 1)
                     sleep_step = 0.1
                     while sleep_total > 0 and not cancel_event.is_set():
@@ -636,77 +667,77 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                     if cancel_event.is_set():
                         return _cancelled_result(attempt + 1)
                     continue
-
-                    # Update diagnostic counters on successful HTTP completion
-                    run_diagnostics["last_heartbeat"] = time.time()
-                    if state is not None:
-                        state["in_flight"] = max(0, state.get("in_flight", 1) - 1)
-
-                    log.info("[req %d] %s status=%d (took %.2fs)",
-                             req_id, model_id, r.status_code,
-                             time.perf_counter() - start)
-
-                    # Check cancellation after a potentially long request
-                    if cancel_event.is_set():
-                        return _cancelled_result(attempt)
-
-                    # 如果状态码不是 200，记录错误并继续重试
-                    if r.status_code != 200:
-                        last_error = f"HTTP {r.status_code}"
-                        log.warning("[req %d] %s HTTP error %d body=%s",
-                                    req_id, model_id, r.status_code,
-                                    (r.text or "")[:200])
-                        run_diagnostics["requests_failed"] += 1
-                        if attempt < max_retries - 1:
-                            # Sleep with cancellation check - interruptible sleep
-                            sleep_total = 0.5 * (attempt + 1)
-                            sleep_step = 0.1
-                            while sleep_total > 0 and not cancel_event.is_set():
-                                await asyncio.sleep(min(sleep_step, sleep_total))
-                                sleep_total -= sleep_step
-                            if cancel_event.is_set():
-                                return _cancelled_result(attempt + 1)
-                            continue
-                        else:
-                            elapsed = (time.perf_counter() - start) * 1000
-                            return {
-                                "prompt": question["question"][:120],
-                                "expected": expected,
-                                "actual": None,
-                                "correct": False,
-                                "error": last_error,
-                                "latency_ms": elapsed,
-                                "category": category,
-                                "retries": attempt,
-                                "timed_out": False,
-                            }
-
-                    # 成功获取响应，解析内容
-                    content = (
-                        r.json()
-                        .get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                    )
-                    content_stripped = _extract_answer(content, expected)
-                    ok = _normalize(content_stripped) == _normalize(expected)
+                else:
                     elapsed = (time.perf_counter() - start) * 1000
-
                     return {
                         "prompt": question["question"][:120],
                         "expected": expected,
-                        "actual": content_stripped,
-                        "correct": ok,
-                        "error": None,
+                        "actual": None,
+                        "correct": False,
+                        "error": last_error,
                         "latency_ms": elapsed,
                         "category": category,
                         "retries": attempt,
                         "timed_out": False,
                     }
 
+            # 成功获取响应，解析内容
+            try:
+                body_json = r.json()
+            except Exception as json_err:
+                log.warning(
+                    "[req %d] %s r.json() failed: %s body=%s",
+                    req_id, model_id, json_err,
+                    (r.text or "")[:200],
+                )
+                run_diagnostics["requests_failed"] += 1
+                last_error = f"JSON parse error: {json_err}"
+                if attempt < max_retries - 1:
+                    sleep_total = 0.5 * (attempt + 1)
+                    sleep_step = 0.1
+                    while sleep_total > 0 and not cancel_event.is_set():
+                        await asyncio.sleep(min(sleep_step, sleep_total))
+                        sleep_total -= sleep_step
+                    if cancel_event.is_set():
+                        return _cancelled_result(attempt + 1)
+                    continue
+                else:
+                    elapsed = (time.perf_counter() - start) * 1000
+                    return {
+                        "prompt": question["question"][:120],
+                        "expected": expected,
+                        "actual": None,
+                        "correct": False,
+                        "error": last_error,
+                        "latency_ms": elapsed,
+                        "category": category,
+                        "retries": attempt,
+                        "timed_out": False,
+                    }
+            content = (
+                body_json
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            content_stripped = _extract_answer(content, expected)
+            ok = _normalize(content_stripped) == _normalize(expected)
+            elapsed = (time.perf_counter() - start) * 1000
 
-            # Fallback (should not be reached)
-            return _timeout_result(max_retries - 1, last_error or "Unknown error")
+            return {
+                "prompt": question["question"][:120],
+                "expected": expected,
+                "actual": content_stripped,
+                "correct": ok,
+                "error": None,
+                "latency_ms": elapsed,
+                "category": category,
+                "retries": attempt,
+                "timed_out": False,
+            }
+
+        # Fallback (should not be reached)
+        return _timeout_result(max_retries - 1, last_error or "Unknown error")
 
     async def test_model_worker(model_info: dict, model_semaphore: asyncio.Semaphore):
         # full_id is the unique key "provider_id:model_id" so that models with the
@@ -801,7 +832,15 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                             "timed_out": False,
                         }
                     else:
+                        msem_wait_start = time.perf_counter()
                         async with model_semaphore:
+                            msem_wait_s = time.perf_counter() - msem_wait_start
+                            if msem_wait_s > 1.0:
+                                msem_avail = getattr(model_semaphore, "_value", "?")
+                                log.warning(
+                                    "[sem] %s waited %.2fs for model_semaphore (avail=%s, per_model_limit=%d)",
+                                    model_id, msem_wait_s, msem_avail, per_model_limit,
+                                )
                             if cancel_event.is_set():
                                 detail = {
                                     "question_id": q_item.get("id", "?"),
@@ -864,7 +903,10 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 
                 return detail
 
+            batch_idx = 0
             for i in range(0, len(sampled), batch_size):
+                batch_start = time.perf_counter()
+                batch_idx += 1
                 # Abort this model's remaining questions if the run was cancelled
                 if cancel_event.is_set():
                     # Fill remaining questions with cancelled placeholders
@@ -904,6 +946,14 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 tasks = [process_question(q) for q in batch]
                 # 等待批次完成，但每个任务都独立运行
                 await asyncio.gather(*tasks, return_exceptions=True)
+                batch_s = time.perf_counter() - batch_start
+                if batch_s > 5.0 or batch_idx % 10 == 1:
+                    log.info(
+                        "[worker] %s batch#%d completed in %.2fs (q%d-%d, cum=%d/%d, pass=%d, err=%d)",
+                        model_id, batch_idx, batch_s,
+                        i + 1, min(i + batch_size, len(sampled)),
+                        completed, len(sampled), passed, error_count,
+                    )
 
                 # Explicitly yield to the event loop so other requests
                 # (health checks, other models' progress, cancel signals)
@@ -952,12 +1002,14 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
         task = asyncio.create_task(test_model_worker(target, model_sem))
         model_tasks.append(task)
 
-    # Track run in diagnostics
+    # Track run in diagnostics - reset model_state to avoid stale
+    # entries from previous runs inflating in_flight counts
     run_diagnostics["current_run"] = run_id
     run_diagnostics["start_time"] = time.time()
     run_diagnostics["last_heartbeat"] = time.time()
     run_diagnostics["requests_total"] = 0
     run_diagnostics["requests_failed"] = 0
+    run_diagnostics["model_state"].clear()
     log.info("[run] %s started: %d models × %d questions, profile=%s",
              run_id, len(targets), num_tests, profile)
 
@@ -974,7 +1026,15 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
 
     completed_models = 0
     cancelled = False
+    last_progress_completed = 0
+    heartbeat_count = 0
     while completed_models < len(targets):
+        qsize = progress_queue.qsize()
+        if qsize > 50:
+            log.warning(
+                "[run] %s progress_queue backlog=%d, may indicate the SSE client is slow",
+                run_id, qsize,
+            )
         if cancel_event.is_set() and not cancelled:
             cancelled = True
             # Cancel all in-flight model tasks so workers break out quickly
@@ -988,6 +1048,47 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
             if msg["type"] == "model_complete":
                 completed_models += 1
         except asyncio.TimeoutError:
+            heartbeat_count += 1
+            # Log detailed stats every 10 heartbeats (~1s)
+            if heartbeat_count % 10 == 1:
+                pending = sum(
+                    m.get("total", 0) - m.get("completed", 0)
+                    for m in run_diagnostics["model_state"].values()
+                )
+                total_completed = sum(
+                    m.get("completed", 0)
+                    for m in run_diagnostics["model_state"].values()
+                )
+                stalled_flag = total_completed == last_progress_completed
+                last_progress_completed = total_completed
+                run_elapsed = time.time() - run_diagnostics["start_time"]
+                in_flight = sum(
+                    m.get("in_flight", 0)
+                    for m in run_diagnostics["model_state"].values()
+                )
+                log.info(
+                    "[run] %s heartbeat: completed=%d/%d, total_q_completed=%d, pending=%d, "
+                    "queue=%d, in_flight=%d, elapsed=%.1fs, stalled=%d, "
+                    "requests=%d, failed=%d",
+                    run_id, completed_models, len(targets), total_completed,
+                    pending, progress_queue.qsize(), in_flight, run_elapsed,
+                    1 if stalled_flag else 0,
+                    run_diagnostics["requests_total"],
+                    run_diagnostics["requests_failed"],
+                )
+                if stalled_flag:
+                    # Log per-model detail to identify which model(s) are stuck
+                    for fid, st in run_diagnostics["model_state"].items():
+                        mid = st.get("model_id", "?")
+                        comp = st.get("completed", 0)
+                        tot = st.get("total", 0)
+                        infl = st.get("in_flight", 0)
+                        last_act = st.get("last_activity", 0)
+                        ago = time.time() - last_act if last_act else -1
+                        log.warning(
+                            "[run] %s STALLED model=%s progress=%d/%d in_flight=%d last_activity=%.1fs_ago",
+                            run_id, mid, comp, tot, infl, ago,
+                        )
             # Send heartbeat to keep connection alive
             yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
 
