@@ -47,7 +47,6 @@ const TestsPage: Component = () => {
   const [runStartTime, setRunStartTime] = createSignal<number | null>(null)
   const [elapsed, setElapsed] = createSignal(0)
   const [currentRunId, setCurrentRunId] = createSignal<string | null>(null)
-  let currentAbortController: AbortController | null = null
 
   const load = async (silent = false) => {
     // Skip polling during test runs — the SSE stream provides live data,
@@ -116,10 +115,6 @@ const TestsPage: Component = () => {
       }
     }, 1000)
 
-    // Prepare an AbortController so stopTest() can cancel this request.
-    currentAbortController = new AbortController()
-    const signal = currentAbortController.signal
-
     try {
       const body = JSON.stringify({
         model_ids: q.map(m => m.id),
@@ -131,90 +126,69 @@ const TestsPage: Component = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
-        signal,
       })
 
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
         const text = await res.text().catch(() => "")
         throw new Error(text || `${res.status} ${res.statusText}`)
       }
 
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ""
+      const { run_id } = await res.json()
+      setCurrentRunId(run_id)
 
-      while (true) {
-        let result: ReadableStreamReadResult<Uint8Array>
-        try {
-          result = await reader.read()
-        } catch (e: any) {
-          if (e?.name === "AbortError") {
-            try { await reader.cancel() } catch { /* noop */ }
-            break
-          }
-          throw e
-        }
-        const { done, value } = result
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-
-        const lines = buffer.split("\n")
-        buffer = lines.pop() || ""
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue
-          const payload = line.slice(6).trim()
-          if (!payload) continue
-
+      // Wrap polling in a promise so we can await completion
+      await new Promise<void>((resolve) => {
+        const doPoll = async () => {
+          if (!run_id) { clearInterval(pollId); resolve(); return }
           try {
-            const msg = JSON.parse(payload)
-            if (msg.type === "run_start") {
-              setCurrentRunId(msg.run_id)
-            } else if (msg.type === "model_start") {
-              setProgress(prev => ({
-                ...prev,
-                [msg.full_id]: { ...prev[msg.full_id], started: true },
-              }))
-            } else if (msg.type === "model_progress") {
-              setProgress(prev => ({
-                ...prev,
-                [msg.full_id]: {
-                  ...prev[msg.full_id],
-                  started: true,
-                  completed: msg.completed,
-                  passed: msg.passed,
-                  total: msg.total,
-                },
-              }))
-            } else if (msg.type === "model_complete") {
-              setProgress(prev => ({
-                ...prev,
-                [msg.full_id]: {
-                  ...prev[msg.full_id],
-                  done: true,
-                  completed: msg.result.total,
-                  passed: msg.result.passed,
-                  total: msg.result.total,
-                  elapsedMs: msg.result.elapsed_ms,
-                },
-              }))
-            } else if (msg.type === "run_complete") {
-              setLatestRun(msg.result)
+            const pRes = await fetch(`http://localhost:8765/api/test/progress/${run_id}`)
+            if (!pRes.ok) return
+            const data = await pRes.json()
+
+            // Update model progress
+            const newProgress: Record<string, ModelProgress> = {}
+            for (const m of data.models || []) {
+              const key = m.full_id || `${run_id}_${m.model_id}`
+              newProgress[key] = {
+                id: key,
+                model_id: m.model_id,
+                provider_name: m.provider_name || "",
+                started: m.completed > 0 || m.in_flight > 0,
+                done: m.completed >= m.total && m.total > 0,
+                completed: m.completed,
+                passed: 0,
+                total: m.total,
+              }
+            }
+            setProgress(prev => {
+              const merged = { ...prev }
+              for (const [k, v] of Object.entries(newProgress)) {
+                merged[k] = { ...merged[k], ...v, started: merged[k]?.started || v.started, done: merged[k]?.done || v.done }
+              }
+              return merged
+            })
+
+            if (data.completed || (!data.running && data.total_completed > 0)) {
+              clearInterval(pollId)
+              try {
+                const results = await api.getResultById(run_id)
+                setLatestRun(results)
+              } catch { /* ignore */ }
+              resolve()
             }
           } catch {
-            // skip
+            // Poll failed, retry next interval
           }
         }
-      }
+
+        doPoll() // Immediate first poll
+        const pollId = window.setInterval(doPoll, 2000)
+      })
+
     } catch (e: any) {
-      if (e?.name === "AbortError") {
-        // User stopped the test - not an error
-      } else {
-        setError(String(e))
-      }
+      setError(String(e))
     } finally {
       clearInterval(timer)
-      currentAbortController = null
       setCurrentRunId(null)
       setStopping(false)
       setRunning(false)
@@ -226,10 +200,6 @@ const TestsPage: Component = () => {
     setStopping(true)
     if (id) {
       try { await api.cancelRun(id) } catch { /* backend may already be closing */ }
-    }
-    // Abort the SSE stream on the client side as well
-    if (currentAbortController) {
-      try { currentAbortController.abort() } catch { /* noop */ }
     }
   }
 

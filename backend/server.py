@@ -15,7 +15,6 @@ from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -94,6 +93,7 @@ SYSTEM_PROMPT = (
     "（如 A、B、C、D 或 Yes、No 或一个数字），"
     "禁止输出任何解释、分析、标点或换行。违反此规则的回答将被视为无效。】\n\n"
 )
+
 
 
 def _api_url(base: str, path: str) -> str:
@@ -466,11 +466,12 @@ async def run_test(req: TestRunRequest):
 
     run_id = str(uuid.uuid4())[:8]
 
-    # Start streaming test run
-    return StreamingResponse(
-        _run_test_stream(run_id, targets, sampled, cat_stats, req.num_tests, req.profile, seed),
-        media_type="text/event-stream",
+    # Start test as a background asyncio task — no more SSE streaming.
+    # The frontend polls GET /api/test/progress/{run_id} for live updates.
+    asyncio.create_task(
+        _run_test_background(run_id, targets, sampled, cat_stats, req.num_tests, req.profile, seed)
     )
+    return {"run_id": run_id, "num_tests": req.num_tests, "num_models": len(targets)}
 
 
 @app.post("/api/test/cancel/{run_id}")
@@ -483,14 +484,48 @@ async def cancel_run(run_id: str):
     return {"ok": True, "run_id": run_id}
 
 
-async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict],
-                          cat_stats: dict[str, int], num_tests: int, profile: str, seed: int):
+@app.get("/api/test/progress/{run_id}")
+async def get_progress(run_id: str):
+    """Polling endpoint for live test progress. Returns current state of all
+    models and completion status without requiring a long-lived connection."""
+    is_active = run_id in active_runs
+    model_state = run_diagnostics.get("model_state", {})
+    models = []
+    total_completed = 0
+    total_questions = 0
+    for fid, st in model_state.items():
+        comp = st.get("completed", 0)
+        total = st.get("total", 0)
+        models.append({
+            "full_id": fid,
+            "model_id": st.get("model_id", "?"),
+            "provider_name": st.get("provider_name", "?"),
+            "completed": comp,
+            "total": total,
+            "in_flight": st.get("in_flight", 0),
+        })
+        total_completed += comp
+        total_questions += total
+
+    run_results = [r for r in test_results if r.get("run_id") == run_id]
+
+    return {
+        "run_id": run_id,
+        "running": is_active,
+        "completed": len(run_results) > 0,
+        "total_completed": total_completed,
+        "total_questions": total_questions,
+        "models": models,
+        "elapsed_s": time.time() - run_diagnostics.get("start_time", time.time()),
+    }
+
+
+async def _run_test_background(run_id: str, targets: list[dict], sampled: list[dict],
+                           cat_stats: dict[str, int], num_tests: int, profile: str, seed: int):
     global_semaphore = asyncio.Semaphore(150)
-    progress_queue: asyncio.Queue = asyncio.Queue()
     results: dict[str, dict] = {}
 
-    # Register this run as cancellable. The event is set() when /api/test/cancel
-    # is called; workers watch it and break out of their loops early.
+    # Register this run as cancellable.
     cancel_event = asyncio.Event()
     active_runs[run_id] = cancel_event
 
@@ -777,10 +812,8 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                 "completed": 0,
             }
             results[full_id] = result
-            await progress_queue.put({"type": "model_complete", "full_id": full_id, "model_id": model_id, "result": result})
             return
 
-        await progress_queue.put({"type": "model_start", "full_id": full_id, "model_id": model_id, "provider_name": provider_name})
 
         # Use a dedicated client per model with reasonable connection pool
         # limits. HTTP/2 allows multiplexing many requests over a single TCP
@@ -890,17 +923,6 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                     run_diagnostics["model_state"][full_id]["completed"] = completed
                     run_diagnostics["model_state"][full_id]["last_activity"] = time.time()
                 
-                await progress_queue.put({
-                    "type": "model_progress",
-                    "full_id": full_id,
-                    "model_id": model_id,
-                    "provider_name": provider_name,
-                    "completed": completed,
-                    "total": len(sampled),
-                    "passed": passed,
-                    "error_count": error_count,
-                })
-                
                 return detail
 
             batch_idx = 0
@@ -927,17 +949,10 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                         error_count += 1
                         cat = q.get("category", "common_science")
                         cat_total[cat] += 1
-                    # Send a final progress update
-                    await progress_queue.put({
-                        "type": "model_progress",
-                        "full_id": full_id,
-                        "model_id": model_id,
-                        "provider_name": provider_name,
-                        "completed": completed,
-                        "total": len(sampled),
-                        "passed": passed,
-                        "error_count": error_count,
-                    })
+                    # Update model_state for progress polling
+                    if full_id in run_diagnostics["model_state"]:
+                        run_diagnostics["model_state"][full_id]["completed"] = completed
+                        run_diagnostics["model_state"][full_id]["last_activity"] = time.time()
                     break
 
                 batch = sampled[i:i + batch_size]
@@ -993,7 +1008,6 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
             if full_id in run_diagnostics["model_state"]:
                 run_diagnostics["model_state"][full_id]["in_flight"] = 0
                 run_diagnostics["model_state"][full_id]["finished_at"] = time.time()
-            await progress_queue.put({"type": "model_complete", "full_id": full_id, "model_id": model_id, "result": result})
 
     # Create per-model semaphores
     model_tasks = []
@@ -1014,43 +1028,17 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
              run_id, len(targets), num_tests, profile)
 
     # Stream progress updates
-    await progress_queue.put({
-        "type": "run_start",
-        "run_id": run_id,
-        "total_models": len(targets),
-        "num_tests": num_tests,
-        "profile": profile,
-        "seed": seed,
-        "category_sampled": cat_stats,
-    })
-
-    completed_models = 0
-    cancelled = False
-    last_progress_completed = 0
-    heartbeat_count = 0
-    while completed_models < len(targets):
-        qsize = progress_queue.qsize()
-        if qsize > 50:
-            log.warning(
-                "[run] %s progress_queue backlog=%d, may indicate the SSE client is slow",
-                run_id, qsize,
-            )
-        if cancel_event.is_set() and not cancelled:
-            cancelled = True
-            # Cancel all in-flight model tasks so workers break out quickly
-            for t in model_tasks:
-                t.cancel()
-            await progress_queue.put({"type": "run_cancelled", "run_id": run_id})
-        try:
-            msg = await asyncio.wait_for(progress_queue.get(), timeout=0.1)
-            yield f"data: {json.dumps(msg)}\n\n"
-
-            if msg["type"] == "model_complete":
-                completed_models += 1
-        except asyncio.TimeoutError:
-            heartbeat_count += 1
-            # Log detailed stats every 10 heartbeats (~1s)
-            if heartbeat_count % 10 == 1:
+    _results_saved = False
+    try:
+        # Start periodic heartbeat logger that runs alongside workers
+        async def _log_heartbeat():
+            prev_total = 0
+            while True:
+                await asyncio.sleep(1)
+                if cancel_event.is_set():
+                    break
+                if all(t.done() for t in model_tasks):
+                    break
                 pending = sum(
                     m.get("total", 0) - m.get("completed", 0)
                     for m in run_diagnostics["model_state"].values()
@@ -1059,25 +1047,23 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                     m.get("completed", 0)
                     for m in run_diagnostics["model_state"].values()
                 )
-                stalled_flag = total_completed == last_progress_completed
-                last_progress_completed = total_completed
+                stalled_flag = total_completed == prev_total
+                prev_total = total_completed
                 run_elapsed = time.time() - run_diagnostics["start_time"]
                 in_flight = sum(
                     m.get("in_flight", 0)
                     for m in run_diagnostics["model_state"].values()
                 )
                 log.info(
-                    "[run] %s heartbeat: completed=%d/%d, total_q_completed=%d, pending=%d, "
-                    "queue=%d, in_flight=%d, elapsed=%.1fs, stalled=%d, "
+                    "[run] %s heartbeat: total_q_completed=%d, pending=%d, "
+                    "in_flight=%d, elapsed=%.1fs, stalled=%d, "
                     "requests=%d, failed=%d",
-                    run_id, completed_models, len(targets), total_completed,
-                    pending, progress_queue.qsize(), in_flight, run_elapsed,
+                    run_id, total_completed, pending, in_flight, run_elapsed,
                     1 if stalled_flag else 0,
                     run_diagnostics["requests_total"],
                     run_diagnostics["requests_failed"],
                 )
                 if stalled_flag:
-                    # Log per-model detail to identify which model(s) are stuck
                     for fid, st in run_diagnostics["model_state"].items():
                         mid = st.get("model_id", "?")
                         comp = st.get("completed", 0)
@@ -1089,55 +1075,103 @@ async def _run_test_stream(run_id: str, targets: list[dict], sampled: list[dict]
                             "[run] %s STALLED model=%s progress=%d/%d in_flight=%d last_activity=%.1fs_ago",
                             run_id, mid, comp, tot, infl, ago,
                         )
-            # Send heartbeat to keep connection alive
-            yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
 
-    # Wait for all tasks to complete (or to be cancelled)
-    await asyncio.gather(*model_tasks, return_exceptions=True)
+        hb_task = asyncio.create_task(_log_heartbeat())
 
-    # Unregister the run from active_runs
-    active_runs.pop(run_id, None)
+        # Wait for all model workers to finish (or be cancelled)
+        await asyncio.gather(*model_tasks, return_exceptions=True)
+        hb_task.cancel()
 
-    # Build final result
-    run_results = [results[t["id"]] for t in targets if t["id"] in results]
+        # Build final result from completed workers
+        run_results = [results[t["id"]] for t in targets if t["id"] in results]
+        all_done = len(run_results) == len(targets)
 
-    # Count actually-completed questions (cancelled ones count toward total but not answered)
-    answered = sum(r.get("completed", 0) for r in run_results)
-    total_questions = sum(r["total"] for r in run_results)
+        # Unregister the run from active_runs
+        active_runs.pop(run_id, None)
 
-    final_result = {
-        "run_id": run_id,
-        "timestamp": datetime.now().isoformat(),
-        "results": run_results,
-        "total_models": len(targets),
-        "total_passed": sum(r["passed"] for r in run_results),
-        "total_questions": total_questions,
-        "total_answered": answered,
-        "category_sampled": cat_stats,
-        "num_tests": num_tests,
-        "profile": profile,
-        "seed": seed,
-        "completed": not cancelled and answered == total_questions,
-        "cancelled": cancelled,
-    }
+        # Count actually-completed questions
+        answered = sum(r.get("completed", 0) for r in run_results)
+        total_questions = sum(r["total"] for r in run_results)
 
-    # Mark run complete in diagnostics
-    run_diagnostics["current_run"] = None
-    run_end = time.time()
-    log.info(
-        "[run] %s completed: %d/%d passed, %d answered in %.1fs (%d http requests)",
-        run_id, final_result["total_passed"], final_result["total_questions"],
-        final_result["total_answered"], run_end - run_diagnostics["start_time"],
-        run_diagnostics["requests_total"],
-    )
+        final_result = {
+            "run_id": run_id,
+            "timestamp": datetime.now().isoformat(),
+            "results": run_results,
+            "total_models": len(targets),
+            "total_passed": sum(r["passed"] for r in run_results),
+            "total_questions": total_questions,
+            "total_answered": answered,
+            "category_sampled": cat_stats,
+            "num_tests": num_tests,
+            "profile": profile,
+            "seed": seed,
+            "completed": all_done,
+            "cancelled": False,
+        }
 
-    # Store in history
-    test_results.insert(0, final_result)
-    _save_results()
+        # Mark run complete in diagnostics
+        run_diagnostics["current_run"] = None
+        run_end = time.time()
+        log.info(
+            "[run] %s completed: %d/%d passed, %d answered in %.1fs (%d http requests)",
+            run_id, final_result["total_passed"], final_result["total_questions"],
+            final_result["total_answered"], run_end - run_diagnostics["start_time"],
+            run_diagnostics["requests_total"],
+        )
 
-    yield f"data: {json.dumps({'type': 'run_complete', 'result': final_result})}\n\n"
+        # Store in history
+        _results_saved = True
+        test_results.insert(0, final_result)
+        _save_results()
 
+    finally:
+        # If _results_saved is still False, the run was interrupted
+        # (cancelled or exception). Save whatever has been completed so far.
+        cancel_event.set()
+        for t in model_tasks:
+            if not t.done():
+                t.cancel()
+        active_runs.pop(run_id, None)
+        run_diagnostics["current_run"] = None
 
+        # If _results_saved is still False, the run was interrupted
+        # (timeout, SSE client disconnect, or other exception).
+        # Cancel workers and save whatever has been completed so far.
+        if not _results_saved:
+            completed_results = [
+                r for r in results.values() if r.get("completed", 0) > 0
+            ]
+            if completed_results:
+                answered = sum(r.get("completed", 0) for r in completed_results)
+                total_questions = sum(r["total"] for r in completed_results)
+                partial_result = {
+                    "run_id": run_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "results": completed_results,
+                    "total_models": len(targets),
+                    "total_passed": sum(r["passed"] for r in completed_results),
+                    "total_questions": total_questions,
+                    "total_answered": answered,
+                    "category_sampled": cat_stats,
+                    "num_tests": num_tests,
+                    "profile": profile,
+                    "seed": seed,
+                    "completed": False,
+                    "cancelled": False,
+                    "interrupted": True,
+                }
+                test_results.insert(0, partial_result)
+                _save_results()
+                run_end = time.time()
+                log.info(
+                    "[run] %s interrupted: saved %d/%d partial results, "
+                    "%d/%d passed, %d answered in %.1fs (%d http requests)",
+                    run_id, len(completed_results), len(targets),
+                    partial_result["total_passed"], partial_result["total_questions"],
+                    partial_result["total_answered"],
+                    run_end - run_diagnostics["start_time"],
+                    run_diagnostics["requests_total"],
+                )
 @app.get("/api/test/results")
 async def get_results():
     return test_results
