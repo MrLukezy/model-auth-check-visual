@@ -23,24 +23,16 @@ from pydantic import BaseModel
 # stderr output from httpx's own INFO-level HTTP logging (~4000 lines per run)
 # fills the pipe buffer, blocking the event loop and killing the process.
 LOG_PATH = Path(__file__).parent / "server.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_PATH, encoding="utf-8", mode="a"),
-    ],
-)
-log = logging.getLogger("test-server")
-
-# Disable httpx's verbose HTTP request/response logging. Each request logs
-# 2 lines (sent + received), which at 180 req/s creates ~360 stderr lines/s.
-# In a Tauri subprocess, the stderr pipe buffer is limited and can block.
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-
 DATA_PATH = Path(__file__).parent / "data.json"
 RESULTS_PATH = Path(__file__).parent / "results.json"
-QUESTION_BANK_PATH = Path(__file__).parent.parent.parent / "data" / "all_questions.csv"
+
+# Locate the question bank. Two layouts are supported:
+#   Portable (distribution): backend/server.py -> ../data/all_questions.csv
+#   Dev (source tree):       visual-tool/backend/server.py -> ../../../data/all_questions.csv
+_SERVER_DIR = Path(__file__).resolve().parent
+_PORTABLE_DATA = _SERVER_DIR.parent / "data" / "all_questions.csv"
+_DEV_DATA = _SERVER_DIR.parents[2] / "data" / "all_questions.csv"
+QUESTION_BANK_PATH = _PORTABLE_DATA if _PORTABLE_DATA.exists() else _DEV_DATA
 
 CATEGORIES_V2 = {
     "coding_cs":          {"chinese": "编程与计算机"},

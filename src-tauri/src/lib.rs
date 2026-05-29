@@ -1,4 +1,5 @@
 use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::process::Command as StdCommand;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,8 +14,45 @@ struct BackendHandle {
     running: AtomicBool,
 }
 
-fn spawn_backend(backend_dir: &std::path::Path) -> Result<Child, String> {
-    StdCommand::new("python")
+/// Locate the Python interpreter and backend directory at runtime.
+///
+/// Two supported layouts, tried in order:
+///
+/// 1. Portable (distribution): Real-O-Meter.exe sits next to:
+///      Real-O-Meter/python/python.exe
+///      Real-O-Meter/backend/server.py
+///
+/// 2. Dev (source tree): the executable is built in src-tauri/target/...
+///    and the backend is at <manifest>/../backend. Python is expected on PATH.
+fn resolve_backend() -> Option<(PathBuf, PathBuf)> {
+    // Attempt 1: portable mode relative to the running executable
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_dir = exe.parent().unwrap_or(Path::new(""));
+        let backend = exe_dir.join("backend");
+        let python = exe_dir.join("python").join("python.exe");
+        if backend.join("server.py").exists() && python.exists() {
+            println!(
+                "[tauri] Portable mode: backend={}, python={}",
+                backend.display(),
+                python.display()
+            );
+            return Some((backend, python));
+        }
+    }
+
+    // Attempt 2: dev mode relative to the cargo manifest directory
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let backend = manifest.join("..").join("backend");
+    if backend.join("server.py").exists() {
+        println!("[tauri] Dev mode: backend={}", backend.display());
+        return Some((backend, PathBuf::from("python")));
+    }
+
+    None
+}
+
+fn spawn_backend(backend_dir: &Path, python_cmd: &Path) -> Result<Child, String> {
+    StdCommand::new(python_cmd)
         .args([
             "-m",
             "uvicorn",
@@ -30,7 +68,8 @@ fn spawn_backend(backend_dir: &std::path::Path) -> Result<Child, String> {
         .spawn()
         .map_err(|e| {
             format!(
-                "Failed to start Python backend. Make sure Python is installed and on PATH. Error: {e}"
+                "Failed to start Python backend (command {:?}). Error: {e}",
+                python_cmd
             )
         })
 }
@@ -90,23 +129,25 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
-            let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let backend_dir = manifest.join("..").join("backend");
-            let backend_dir = backend_dir.canonicalize().unwrap_or(backend_dir);
+            let (backend_dir, python_cmd) = match resolve_backend() {
+                Some(pair) => pair,
+                None => {
+                    eprintln!(
+                        "[tauri] Could not locate backend/server.py in portable (exe_dir/backend) \
+                         or dev (src-tauri/../backend) layout. Ensure the bundle contains \
+                         python/python.exe and backend/server.py next to the executable."
+                    );
+                    app.manage(BackendHandle {
+                        child: Mutex::new(None),
+                        running: AtomicBool::new(false),
+                    });
+                    return Ok(());
+                }
+            };
 
-            if !backend_dir.join("server.py").exists() {
-                eprintln!(
-                    "[tauri] server.py not found at {}",
-                    backend_dir.display()
-                );
-                app.manage(BackendHandle {
-                    child: Mutex::new(None),
-                    running: AtomicBool::new(false),
-                });
-                return Ok(());
-            }
+            let backend_dir_full = backend_dir.canonicalize().unwrap_or(backend_dir.clone());
 
-            let child = match spawn_backend(&backend_dir) {
+            let child = match spawn_backend(&backend_dir_full, &python_cmd) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("[tauri] {e}");
