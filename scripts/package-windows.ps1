@@ -46,9 +46,13 @@ try {
 } finally {
     Pop-Location
 }
-$exeSrc = Join-Path $visualTool "src-tauri\target\x86_64-pc-windows-msvc\release\real-o-meter.exe"
-if (!(Test-Path $exeSrc)) {
-    throw "Tauri build failed: $exeSrc not found"
+$exeCandidates = @(
+    Join-Path $visualTool "src-tauri\target\release\real-o-meter.exe",
+    Join-Path $visualTool "src-tauri\target\x86_64-pc-windows-msvc\release\real-o-meter.exe"
+)
+$exeSrc = $exeCandidates | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending | Select-Object -First 1
+if (!$exeSrc) {
+    throw "Tauri build failed: no real-o-meter.exe found in target release directories"
 }
 Write-Host "       OK -> $exeSrc" -ForegroundColor Green
 

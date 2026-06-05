@@ -20,7 +20,7 @@ interface TestRunState {
 }
 
 interface UIState {
-  activeTab: "providers" | "models" | "tests" | "record"
+  activeTab: "providers" | "models" | "tests" | "record" | "auth"
   expandedRuns: Record<string, boolean>
   sortRuns: Record<string, "accuracy" | "elapsed">
 }

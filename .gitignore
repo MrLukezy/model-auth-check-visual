@@ -13,3 +13,4 @@ backend/__pycache__/
 src/**/*.js
 src/**/*.jsx
 public/favicon.png
+backend/auth_results.json

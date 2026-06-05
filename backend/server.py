@@ -17,12 +17,18 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from auth_check import register_auth_routes
 
 # Set up logging - write ONLY to file. StreamHandler (stderr) is deliberately
 # removed because this process runs as a Tauri subprocess, and excessive
 # stderr output from httpx's own INFO-level HTTP logging (~4000 lines per run)
 # fills the pipe buffer, blocking the event loop and killing the process.
 LOG_PATH = Path(__file__).parent / "server.log"
+_log_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+_log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+log = logging.getLogger("server")
+log.setLevel(logging.INFO)
+log.addHandler(_log_handler)
 DATA_PATH = Path(__file__).parent / "data.json"
 RESULTS_PATH = Path(__file__).parent / "results.json"
 
@@ -31,7 +37,7 @@ RESULTS_PATH = Path(__file__).parent / "results.json"
 #   Dev (source tree):       visual-tool/backend/server.py -> ../../../data/all_questions.csv
 _SERVER_DIR = Path(__file__).resolve().parent
 _PORTABLE_DATA = _SERVER_DIR.parent / "data" / "all_questions.csv"
-_DEV_DATA = _SERVER_DIR.parents[2] / "data" / "all_questions.csv"
+_DEV_DATA = _SERVER_DIR.parents[1] / "data" / "all_questions.csv"
 QUESTION_BANK_PATH = _PORTABLE_DATA if _PORTABLE_DATA.exists() else _DEV_DATA
 
 CATEGORIES_V2 = {
@@ -88,7 +94,51 @@ SYSTEM_PROMPT = (
 
 
 
+import re
+from urllib.parse import urlparse, urlunparse
+
+
+_NON_API_PATHS = {
+    "console", "panel", "admin", "dashboard", "log",
+    "token", "topup", "setting", "channel", "redemption",
+    "user", "subscription", "docs", "about", "pricing",
+    "playground", "midjourney", "task", "personal",
+    "detail", "deployment", "profile",
+}
+
+_API_SUBPATH_SEGMENTS = {
+    "images", "generations", "completions", "embeddings",
+    "chat", "edits", "transcriptions", "translations",
+    "audio", "fine-tuning", "fine_tuning", "files",
+    "threads", "assistants", "runs", "batches",
+    "realtime", "responses",
+}
+
+
+def _normalize_base_url(raw: str) -> str:
+    raw = raw.strip().rstrip("/")
+    parsed = urlparse(raw)
+    if not parsed.scheme:
+        raw = "https://" + raw
+        parsed = urlparse(raw)
+    segments = [s for s in parsed.path.split("/") if s]
+    cleaned = []
+    for seg in segments:
+        low = seg.lower()
+        if low in ("v1", "v2", "v3", "v4"):
+            cleaned.append(seg)
+            break
+        if low in _NON_API_PATHS:
+            break
+        if low in _API_SUBPATH_SEGMENTS:
+            break
+        cleaned.append(seg)
+    new_path = "/" + "/".join(cleaned) if cleaned else ""
+    return urlunparse(parsed._replace(path=new_path))
+
+
 def _api_url(base: str, path: str) -> str:
+    base = _normalize_base_url(base)
     base = base.rstrip("/")
     if base.endswith("/v1"):
         base = base[:-3]
@@ -150,6 +200,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+register_auth_routes(app)
 
 
 class ProviderCreate(BaseModel):
@@ -238,7 +290,7 @@ async def create_provider(data: ProviderCreate):
     providers[pid] = {
         "id": pid,
         "name": data.name,
-        "base_url": data.base_url.rstrip("/"),
+        "base_url": _normalize_base_url(data.base_url),
         "api_key": data.api_key,
         "created_at": datetime.now().isoformat(),
     }
@@ -263,39 +315,80 @@ async def fetch_provider_models(pid: str):
     if pid not in providers:
         raise HTTPException(404, "Provider not found")
     p = providers[pid]
-    base = p["base_url"]
+    base = _normalize_base_url(p["base_url"])
     headers = {"Authorization": f"Bearer {p['api_key']}"}
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        for path in ("/v1/models", "/v1/models/list", "/models"):
-            url = _api_url(base, path)
-            try:
-                r = await client.get(url, headers=headers)
-                if r.status_code == 200:
-                    body = r.json()
-                    items = body if isinstance(body, list) else body.get("data", [])
-                    result = []
-                    for item in items:
-                        mid = item.get("id") or item.get("name") or ""
-                        if not mid:
-                            continue
-                        fpk = f"{pid}:{mid}"
-                        models[fpk] = {
-                            "id": fpk,
-                            "provider_id": pid,
-                            "provider_name": p["name"],
-                            "model_id": mid,
-                            "owned_by": item.get("owned_by", ""),
-                        }
-                        result.append(models[fpk])
-                    _save()
-                    return result
-            except httpx.HTTPError:
-                continue
+    tried: list[str] = []
+    last_status: int = 0
+    last_body: str = ""
 
+    model_paths = (
+        "/v1/models",
+        "/v1/models/list",
+        "/api/models",
+        "/models",
+        "/api/v1/models",
+    )
+
+    for verify_ssl in (True, False):
+        async with httpx.AsyncClient(
+            timeout=30,
+            verify=verify_ssl,
+            follow_redirects=True,
+        ) as client:
+            for path in model_paths:
+                url = _api_url(base, path)
+                tried.append(url)
+                try:
+                    r = await client.get(url, headers=headers)
+                    last_status = r.status_code
+                    last_body = (r.text or "")[:300]
+
+                    if r.status_code == 200:
+                        body = r.json()
+                        items = body if isinstance(body, list) else body.get("data", [])
+                        result = []
+                        for item in items:
+                            mid = item.get("id") or item.get("name") or ""
+                            if not mid:
+                                continue
+                            fpk = f"{pid}:{mid}"
+                            models[fpk] = {
+                                "id": fpk,
+                                "provider_id": pid,
+                                "provider_name": p["name"],
+                                "model_id": mid,
+                                "owned_by": item.get("owned_by", ""),
+                            }
+                            result.append(models[fpk])
+                        _save()
+                        return result
+                    elif r.status_code == 401:
+                        raise HTTPException(
+                            401,
+                            f"Authentication failed (401) for {url}. "
+                            f"Check your API key. Response: {last_body[:150]}",
+                        )
+                    elif r.status_code == 403:
+                        raise HTTPException(
+                            403,
+                            f"Access denied (403) for {url}. "
+                            f"Your API key may lack permission to list models. Response: {last_body[:150]}",
+                        )
+                except httpx.ConnectError as e:
+                    log.warning("[models] connect error for %s: %s", url, e)
+                    continue
+                except httpx.HTTPError as e:
+                    log.warning("[models] HTTP error for %s: %s", url, e)
+                    continue
+
+    detail = f"Last status: {last_status}"
+    if last_body:
+        detail += f", body: {last_body[:150]}"
     raise HTTPException(
         400,
-        f"Could not fetch models from {base}. Tried: /v1/models, /v1/models/list, /models",
+        f"Could not fetch models from {base}. "
+        f"Tried {len(tried)} URLs. {detail}",
     )
 
 
@@ -493,6 +586,7 @@ async def get_progress(run_id: str):
             "model_id": st.get("model_id", "?"),
             "provider_name": st.get("provider_name", "?"),
             "completed": comp,
+            "passed": st.get("passed", 0),
             "total": total,
             "in_flight": st.get("in_flight", 0),
         })
@@ -782,6 +876,7 @@ async def _run_test_background(run_id: str, targets: list[dict], sampled: list[d
             "model_id": model_id,
             "provider_name": provider_name,
             "completed": 0,
+            "passed": 0,
             "total": len(sampled),
             "in_flight": 0,
             "last_activity": time.time(),
@@ -820,8 +915,8 @@ async def _run_test_background(run_id: str, targets: list[dict], sampled: list[d
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(30, connect=10),
             limits=client_limits,
-            # http2: let httpx auto-negotiate (defaults to True-capable);
-            # not forcing it either way avoids accidental downgrades.
+            follow_redirects=True,
+            verify=False,
         ) as client:
             # Process questions in batches. Each batch is throttled by the
             # model_semaphore, and we yield between batches so the uvicorn
@@ -913,6 +1008,7 @@ async def _run_test_background(run_id: str, targets: list[dict], sampled: list[d
                 # 每完成一题就发送进度更新
                 if full_id in run_diagnostics["model_state"]:
                     run_diagnostics["model_state"][full_id]["completed"] = completed
+                    run_diagnostics["model_state"][full_id]["passed"] = passed
                     run_diagnostics["model_state"][full_id]["last_activity"] = time.time()
                 
                 return detail
@@ -1001,21 +1097,21 @@ async def _run_test_background(run_id: str, targets: list[dict], sampled: list[d
                 run_diagnostics["model_state"][full_id]["in_flight"] = 0
                 run_diagnostics["model_state"][full_id]["finished_at"] = time.time()
 
-    # Create per-model semaphores
-    model_tasks = []
-    for target in targets:
-        model_sem = asyncio.Semaphore(per_model_limit)
-        task = asyncio.create_task(test_model_worker(target, model_sem))
-        model_tasks.append(task)
-
-    # Track run in diagnostics - reset model_state to avoid stale
-    # entries from previous runs inflating in_flight counts
+    # Track run in diagnostics - reset MUST happen before workers start,
+    # otherwise the clear below wipes the state workers already wrote.
     run_diagnostics["current_run"] = run_id
     run_diagnostics["start_time"] = time.time()
     run_diagnostics["last_heartbeat"] = time.time()
     run_diagnostics["requests_total"] = 0
     run_diagnostics["requests_failed"] = 0
     run_diagnostics["model_state"].clear()
+
+    # Create per-model semaphores
+    model_tasks = []
+    for target in targets:
+        model_sem = asyncio.Semaphore(per_model_limit)
+        task = asyncio.create_task(test_model_worker(target, model_sem))
+        model_tasks.append(task)
     log.info("[run] %s started: %d models × %d questions, profile=%s",
              run_id, len(targets), num_tests, profile)
 

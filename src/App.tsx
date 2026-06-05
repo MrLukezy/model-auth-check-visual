@@ -4,19 +4,21 @@ import ProvidersPage from "./pages/ProvidersPage"
 import ModelsPage from "./pages/ModelsPage"
 import TestsPage from "./pages/TestsPage"
 import RecordPage from "./pages/RecordPage"
+import AuthCheckPage from "./pages/AuthCheckPage"
 import DetailPage from "./pages/DetailPage"
 import BackendStatus from "./components/BackendStatus"
 import TitleBar from "./components/TitleBar"
 import { testRunState, uiState, setUiState } from "./store"
 import { api } from "./api"
 
-type Page = "providers" | "models" | "tests" | "record"
+type Page = "providers" | "models" | "tests" | "record" | "auth"
 
 const NAV: { key: Page; label: string }[] = [
   { key: "providers", label: "Providers" },
   { key: "models", label: "Models" },
   { key: "tests", label: "Tests" },
   { key: "record", label: "Record" },
+  { key: "auth", label: "Auth Check" },
 ]
 
 const MainLayout: Component = () => {
@@ -69,6 +71,7 @@ const MainLayout: Component = () => {
           <div class={page() === "models" ? "" : "hidden"}><ModelsPage /></div>
           <div class={page() === "tests" ? "" : "hidden"}><TestsPage /></div>
           <div class={page() === "record" ? "" : "hidden"}><RecordPage /></div>
+          <div class={page() === "auth" ? "" : "hidden"}><AuthCheckPage /></div>
         </main>
       </div>
     </div>

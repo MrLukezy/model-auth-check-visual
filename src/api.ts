@@ -2,6 +2,7 @@ export interface Provider {
   id: string
   name: string
   base_url: string
+  api_key: string
   created_at: string
 }
 
@@ -69,6 +70,68 @@ export interface BankStats {
   profiles: Record<string, { desc: string; cats: string[] }>
 }
 
+export interface AuthProbeAnalysis {
+  score: number
+  max: number
+  signals: string[]
+  response_preview: string
+}
+
+export interface AuthProbeResult {
+  probe_id: string
+  dimension: string
+  prompt: string
+  response: string | null
+  error: string | null
+  latency_ms: number
+  tokens: number
+  analysis: AuthProbeAnalysis
+  description?: string
+  why?: string
+}
+
+export interface AuthDimension {
+  name: string
+  score: number
+  max: number
+  percent: number
+  weight: number
+  probes: AuthProbeResult[]
+}
+
+export interface AuthCheckResult {
+  run_id: string
+  timestamp: string
+  endpoint: string
+  model: string
+  api_type: string
+  claimed_family: string
+  dimensions: Record<string, AuthDimension>
+  overall_percent: number
+  grade: string
+  verdict: string
+  is_suspect: boolean
+  iq_ok: boolean
+  probe_results: AuthProbeResult[]
+  perf: {
+    avg_latency_ms: number
+    total_tokens: number
+    probe_count: number
+  }
+}
+
+export interface AuthCheckProgress {
+  run_id: string
+  running: boolean
+  completed: boolean
+  phase: string
+  current_probe: string
+  completed_count: number
+  total_count: number
+  signals: string[]
+  result: AuthCheckResult | null
+}
+
 const BASE = "http://localhost:8765"
 const MAX_CONCURRENT = 4
 const inFlight: Map<string, Promise<any>> = new Map()
@@ -108,7 +171,7 @@ export const api = {
     return fetchJson<Model[]>(`/api/models${q}`)
   },
   fetchProviderModels: (id: string) =>
-    fetchJson<Model[]>(`/api/providers/${id}/models`),
+    fetchJson<Model[]>(`/api/providers/${id}/models`, {}, 30000),
   deleteModel: (id: string) =>
     fetchJson<void>(`/api/models/${id}`, { method: "DELETE" }),
 
@@ -136,6 +199,21 @@ export const api = {
   getResultById: (runId: string) => fetchJson<TestRun>(`/api/test/results/${runId}`),
   deleteResult: (runId: string) =>
     fetchJson<void>(`/api/test/results/${runId}`, { method: "DELETE" }),
+
+  runAuthCheck: (d: { endpoint: string; api_key: string; model: string; api_type: string }) =>
+    fetchJson<{ run_id: string }>("/api/auth-check/run", {
+      method: "POST",
+      body: JSON.stringify(d),
+    }, 120000),
+  getAuthProgress: (runId: string) =>
+    fetchJson<AuthCheckProgress>(`/api/auth-check/progress/${runId}`),
+  cancelAuthCheck: (runId: string) =>
+    fetchJson<{ ok: boolean }>(`/api/auth-check/cancel/${runId}`, { method: "POST" }),
+  getAuthResults: () => fetchJson<AuthCheckResult[]>("/api/auth-check/results"),
+  getAuthResultById: (runId: string) =>
+    fetchJson<AuthCheckResult>(`/api/auth-check/results/${runId}`),
+  deleteAuthResult: (runId: string) =>
+    fetchJson<void>(`/api/auth-check/results/${runId}`, { method: "DELETE" }),
 }
 
 async function fetchJson<T>(

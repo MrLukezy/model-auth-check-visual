@@ -156,7 +156,7 @@ const TestsPage: Component = () => {
                 started: m.completed > 0 || m.in_flight > 0,
                 done: m.completed >= m.total && m.total > 0,
                 completed: m.completed,
-                passed: 0,
+                passed: m.passed || 0,
                 total: m.total,
               }
             }
@@ -174,6 +174,7 @@ const TestsPage: Component = () => {
                 const results = await api.getResultById(run_id)
                 setLatestRun(results)
               } catch { /* ignore */ }
+              setRunning(false)
               resolve()
             }
           } catch {
