@@ -14,10 +14,18 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+# Suppress urllib3 InsecureRequestWarning from verify=False.
+# Warnings print to sys.stderr via the `warnings` module (not logging),
+# which in Tauri's subprocess would still fill the pipe buffer even
+# with our FileHandler. Disable at source to be safe.
+import warnings
+from urllib3.exceptions import InsecureRequestWarning
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from auth_check import register_auth_routes
+from long_context import register_long_context_routes
 
 # Set up logging - write ONLY to file. StreamHandler (stderr) is deliberately
 # removed because this process runs as a Tauri subprocess, and excessive
@@ -202,6 +210,7 @@ app.add_middleware(
 )
 
 register_auth_routes(app)
+register_long_context_routes(app)
 
 
 class ProviderCreate(BaseModel):
@@ -272,6 +281,17 @@ def _save_results() -> None:
         print(f"[warn] failed to save results: {e}")
 
 
+async def _save_results_async() -> None:
+    """Non-blocking save: offloads synchronous JSON serialization to a thread pool
+    so the asyncio event loop is never blocked by large file I/O."""
+    await asyncio.to_thread(_save_results)
+
+
+async def _save_async() -> None:
+    """Non-blocking save for provider/model/queue data."""
+    await asyncio.to_thread(_save)
+
+
 @app.on_event("startup")
 async def startup() -> None:
     _load()
@@ -294,7 +314,7 @@ async def create_provider(data: ProviderCreate):
         "api_key": data.api_key,
         "created_at": datetime.now().isoformat(),
     }
-    _save()
+    await _save_async()
     return providers[pid]
 
 
@@ -306,7 +326,7 @@ async def delete_provider(pid: str):
     for m in to_del:
         del models[m]
     del providers[pid]
-    _save()
+    await _save_async()
     return {"ok": True}
 
 
@@ -361,7 +381,7 @@ async def fetch_provider_models(pid: str):
                                 "owned_by": item.get("owned_by", ""),
                             }
                             result.append(models[fpk])
-                        _save()
+                        await _save_async()
                         return result
                     elif r.status_code == 401:
                         raise HTTPException(
@@ -405,7 +425,7 @@ async def delete_model(fid: str):
     if fid not in models:
         raise HTTPException(404, "Model not found")
     del models[fid]
-    _save()
+    await _save_async()
     return {"ok": True}
 
 
@@ -495,7 +515,7 @@ async def add_to_queue(model_full_ids: list[str]):
         test_queue.append(models[fid])
         added.append(fid)
     if added:
-        _save()
+        await _save_async()
     return {"added": added, "queue_size": len(test_queue)}
 
 
@@ -510,7 +530,7 @@ async def remove_from_queue(fid: str):
     before = len(test_queue)
     test_queue = [x for x in test_queue if x["id"] != fid]
     if len(test_queue) < before:
-        _save()
+        await _save_async()
     return {"removed": before - len(test_queue), "queue_size": len(test_queue)}
 
 
@@ -1210,7 +1230,7 @@ async def _run_test_background(run_id: str, targets: list[dict], sampled: list[d
         # Store in history
         _results_saved = True
         test_results.insert(0, final_result)
-        _save_results()
+        await _save_results_async()
 
     finally:
         # If _results_saved is still False, the run was interrupted
@@ -1249,7 +1269,7 @@ async def _run_test_background(run_id: str, targets: list[dict], sampled: list[d
                     "interrupted": True,
                 }
                 test_results.insert(0, partial_result)
-                _save_results()
+                await _save_results_async()
                 run_end = time.time()
                 log.info(
                     "[run] %s interrupted: saved %d/%d partial results, "
@@ -1280,8 +1300,260 @@ async def delete_run(run_id: str):
     test_results = [r for r in test_results if r["run_id"] != run_id]
     if len(test_results) == before:
         raise HTTPException(404, "Run not found")
-    _save_results()
+    await _save_results_async()
     return {"ok": True, "run_id": run_id}
+
+
+class QuickTestRequest(BaseModel):
+    base_url: str
+    api_key: str
+    model_id: str
+    num_questions: int = 10
+    profile: str = "quick"
+
+
+class QuickTestStartRequest(BaseModel):
+    model_name: str
+    num_questions: int = 10
+    profile: str = "quick"
+
+
+class QuickTestSubmitRequest(BaseModel):
+    session_id: str
+    answers: list[dict]
+
+
+quick_test_sessions: dict[str, dict] = {}
+
+
+@app.post("/api/quick-test/start")
+async def quick_test_start(req: QuickTestStartRequest):
+    bank_total = sum(len(v) for v in question_bank.values())
+    if bank_total == 0:
+        raise HTTPException(500, "Question bank not loaded")
+
+    sampled, cat_stats = _sample_questions(question_bank, req.num_questions, req.profile, None)
+    if not sampled:
+        raise HTTPException(500, "No questions sampled")
+
+    session_id = str(uuid.uuid4())[:8]
+    session = {
+        "session_id": session_id,
+        "created_at": datetime.now().isoformat(),
+        "model_name": req.model_name,
+        "questions": sampled,
+        "cat_stats": cat_stats,
+        "profile": req.profile,
+        "total": len(sampled),
+    }
+    quick_test_sessions[session_id] = session
+
+    questions = []
+    for i, q in enumerate(sampled):
+        questions.append({
+            "question_id": f"{session_id}_{i}",
+            "category": q.get("category", "common_science"),
+            "question": q["question"].strip(),
+        })
+
+    return {
+        "session_id": session_id,
+        "total": len(questions),
+        "profile": req.profile,
+        "questions": questions,
+    }
+
+
+@app.post("/api/quick-test/submit")
+async def quick_test_submit(req: QuickTestSubmitRequest):
+    session = quick_test_sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(404, "Session not found or expired")
+
+    questions = session["questions"]
+    cat_stats = session["cat_stats"]
+
+    answers_by_id = {a.get("question_id"): a.get("answer", "") for a in req.answers}
+
+    passed = 0
+    answered = 0
+    details = []
+    cat_passed: dict[str, int] = defaultdict(int)
+    cat_total: dict[str, int] = defaultdict(int)
+
+    for i, q in enumerate(questions):
+        qid = f"{req.session_id}_{i}"
+        expected = q["answer"].strip()
+        category = q.get("category", "common_science")
+        actual = answers_by_id.get(qid, "")
+        cat_total[category] += 1
+
+        extracted = _extract_answer(actual, expected) if actual else ""
+        ok = False
+        if actual:
+            ok = _normalize(extracted) == _normalize(expected)
+            answered += 1
+            if ok:
+                passed += 1
+                cat_passed[category] += 1
+
+        details.append({
+            "question_id": qid,
+            "category": category,
+            "expected": expected,
+            "actual": extracted,
+            "correct": ok,
+        })
+
+    total = len(questions)
+    score = round(passed / total * 100, 1) if total > 0 else 0
+
+    avg_latency = 0
+    result = {
+        "id": f"api:{req.session_id}",
+        "model_id": session["model_name"],
+        "provider_name": "API",
+        "passed": passed,
+        "total": total,
+        "avg_latency_ms": avg_latency,
+        "elapsed_ms": 0,
+        "details": details,
+        "error": None,
+        "error_count": total - answered,
+        "categories": {
+            cat: {"passed": cat_passed.get(cat, 0), "total": cat_total.get(cat, 0)}
+            for cat in cat_total
+        },
+        "completed": answered,
+    }
+
+    final_result = {
+        "run_id": f"api_{req.session_id}",
+        "timestamp": datetime.now().isoformat(),
+        "results": [result],
+        "total_models": 1,
+        "total_passed": passed,
+        "total_questions": total,
+        "total_answered": answered,
+        "category_sampled": cat_stats,
+        "num_tests": total,
+        "profile": session["profile"],
+        "completed": True,
+        "cancelled": False,
+        "source": "api",
+    }
+
+    test_results.insert(0, final_result)
+    await _save_results_async()
+
+    quick_test_sessions.pop(req.session_id, None)
+
+    return {
+        "session_id": req.session_id,
+        "model_name": session["model_name"],
+        "passed": passed,
+        "answered": answered,
+        "total": total,
+        "score": score,
+        "profile": session["profile"],
+        "category_stats": cat_stats,
+        "details": details,
+    }
+
+
+@app.post("/api/quick-test")
+async def quick_test(req: QuickTestRequest):
+    bank_total = sum(len(v) for v in question_bank.values())
+    if bank_total == 0:
+        raise HTTPException(500, "Question bank not loaded")
+
+    sampled, cat_stats = _sample_questions(question_bank, req.num_questions, req.profile, None)
+    if not sampled:
+        raise HTTPException(500, "No questions sampled")
+
+    base = _normalize_base_url(req.base_url)
+    url = _api_url(base, "/v1/chat/completions")
+    headers = {
+        "Authorization": f"Bearer {req.api_key}",
+        "Content-Type": "application/json",
+    }
+
+    passed = 0
+    details = []
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10), verify=False, follow_redirects=True) as client:
+        tasks = []
+        for q in sampled:
+            tasks.append(_quick_test_single(client, url, headers, req.model_id, q))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for r in results:
+        if isinstance(r, Exception):
+            details.append({"correct": False, "error": str(r)[:200]})
+        else:
+            details.append(r)
+            if r.get("correct"):
+                passed += 1
+
+    total = len(sampled)
+    score = round(passed / total * 100, 1) if total > 0 else 0
+
+    return {
+        "model_id": req.model_id,
+        "passed": passed,
+        "total": total,
+        "score": score,
+        "profile": req.profile,
+        "category_stats": cat_stats,
+        "details": details,
+    }
+
+
+async def _quick_test_single(client: httpx.AsyncClient, url: str, headers: dict,
+                              model_id: str, question: dict) -> dict:
+    prompt = SYSTEM_PROMPT + question["question"].strip()
+    expected = question["answer"].strip()
+    category = question.get("category", "common_science")
+    start = time.perf_counter()
+    try:
+        r = await client.post(
+            url,
+            headers=headers,
+            json={
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "max_tokens": 512,
+            },
+            timeout=30,
+        )
+        latency = (time.perf_counter() - start) * 1000
+        if r.status_code != 200:
+            return {
+                "category": category,
+                "correct": False,
+                "error": f"HTTP {r.status_code}",
+                "latency_ms": latency,
+            }
+        body = r.json()
+        content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+        extracted = _extract_answer(content, expected)
+        ok = _normalize(extracted) == _normalize(expected)
+        return {
+            "category": category,
+            "expected": expected,
+            "actual": extracted,
+            "correct": ok,
+            "latency_ms": latency,
+        }
+    except Exception as e:
+        latency = (time.perf_counter() - start) * 1000
+        return {
+            "category": category,
+            "correct": False,
+            "error": str(e)[:200],
+            "latency_ms": latency,
+        }
 
 
 @app.get("/api/health")

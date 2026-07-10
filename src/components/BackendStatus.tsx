@@ -1,6 +1,6 @@
 import { Component, createSignal, Show, onMount, onCleanup } from "solid-js"
 import { api } from "../api"
-import { testRunState } from "../store"
+import { isAnyCheckRunning } from "../store"
 
 const BackendStatus: Component = () => {
   const [ok, setOk] = createSignal<boolean | null>(null)
@@ -16,7 +16,7 @@ const BackendStatus: Component = () => {
       // consumes a concurrent HTTP connection slot (browsers limit to 6
       // connections per host), competing with the SSE stream and other
       // polling requests, causing spurious timeouts.
-      if (testRunState.running) {
+      if (isAnyCheckRunning()) {
         // Keep the backend state as "connected" since SSE is alive.
         // Reset failure counters so that when the test ends we start fresh.
         if (!ok()) setOk(true)
@@ -46,7 +46,7 @@ const BackendStatus: Component = () => {
         // clearly not dead. Health-check timeouts during test runs are
         // transient (event loop saturation from 9 concurrent model workers).
         // We require many more consecutive failures before showing "disconnected".
-        const isBusy = testRunState.running
+        const isBusy = isAnyCheckRunning()
         const threshold = isBusy ? 15 : 3
 
         // Flap protection: require N+ consecutive failures before flipping UI
@@ -96,7 +96,7 @@ const BackendStatus: Component = () => {
   })
 
   // Show a subtle "busy" state while tests are running
-  const isTesting = () => testRunState.running
+  const isTesting = () => isAnyCheckRunning()
 
   return (
     <div class="px-5 py-3 border-t border-[var(--color-ink-2)]/30 text-xs flex items-center gap-2">
@@ -108,12 +108,12 @@ const BackendStatus: Component = () => {
               <>
                 <span class="w-2 h-2 rounded-full bg-[var(--color-danger)] animate-pulse" />
                 <span class="text-[var(--color-ink-1)]">
-                  {attempts() === 0 ? "Checking..." : "Backend starting..."}
+                  {attempts() === 0 ? "检查中..." : "后端启动中..."}
                 </span>
               </>
             }>
               <span class="w-2 h-2 rounded-full bg-[var(--color-gold)] shadow-[0_0_6px_var(--color-gold)] animate-pulse" />
-              <span class="text-[var(--color-ink-1)]">Testing (server busy)</span>
+              <span class="text-[var(--color-ink-1)]">检测中（服务器繁忙）</span>
             </Show>
           </>
         }
@@ -121,11 +121,11 @@ const BackendStatus: Component = () => {
         <Show when={isTesting()} fallback={
           <>
             <span class="w-2 h-2 rounded-full bg-[var(--color-gold)] shadow-[0_0_6px_var(--color-gold)]" />
-            <span class="text-[var(--color-ink-1)]">Backend connected</span>
+            <span class="text-[var(--color-ink-1)]">后端已连接</span>
           </>
         }>
           <span class="w-2 h-2 rounded-full bg-[var(--color-gold)] shadow-[0_0_6px_var(--color-gold)] animate-pulse" />
-          <span class="text-[var(--color-ink-1)]">Testing...</span>
+          <span class="text-[var(--color-ink-1)]">检测中...</span>
         </Show>
       </Show>
     </div>

@@ -1,4 +1,5 @@
 import { createStore } from "solid-js/store"
+import { createSignal } from "solid-js"
 
 interface ModelProgress {
   model_id: string
@@ -20,7 +21,7 @@ interface TestRunState {
 }
 
 interface UIState {
-  activeTab: "providers" | "models" | "tests" | "record" | "auth"
+  activeTab: "providers" | "models" | "tests" | "testsapi" | "longctx" | "record" | "auth" | "security"
   expandedRuns: Record<string, boolean>
   sortRuns: Record<string, "accuracy" | "elapsed">
 }
@@ -40,5 +41,13 @@ const [uiState, setUiState] = createStore<UIState>({
   sortRuns: {},
 })
 
+const [authRunning, setAuthRunning] = createSignal(false)
+const [securityRunning, setSecurityRunning] = createSignal(false)
+
+function isAnyCheckRunning() {
+  return testRunState.running || authRunning() || securityRunning()
+}
+
 export { testRunState, setTestRunState, uiState, setUiState }
+export { authRunning, setAuthRunning, securityRunning, setSecurityRunning, isAnyCheckRunning }
 export type { ModelProgress, TestRunState }

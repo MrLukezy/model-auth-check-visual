@@ -4,17 +4,18 @@ import { TestRun, ModelResult } from "../api"
 import { uiState, setUiState } from "../store"
 import ConfirmModal from "./ConfirmModal"
 import IconLegend from "./IconLegend"
+import MarkdownRenderer from "./MarkdownRenderer"
 import "./score-colors.css"
 
 const CAT_LABELS: Record<string, string> = {
-  coding_cs: "CS",
-  math_reasoning: "Math",
-  logical_reasoning: "Logic",
-  safety_guard: "Safety",
-  common_science: "Common",
-  game_dev: "Game",
-  emotion_psychology: "Psych",
-  language_logic: "Language",
+  coding_cs: "编程",
+  math_reasoning: "数学",
+  logical_reasoning: "逻辑",
+  safety_guard: "安全",
+  common_science: "常识",
+  game_dev: "游戏",
+  emotion_psychology: "心理",
+  language_logic: "语言",
 }
 
 export function scoreColor(passed: number, total: number): string {
@@ -40,7 +41,12 @@ export function formatElapsed(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
   const s = Math.round(ms / 1000)
   if (s < 60) return `${s}s`
-  return `${Math.floor(s / 60)}m ${s % 60}s`
+  const m = Math.floor(s / 60)
+  const rem = s % 60
+  if (m < 60) return `${m}m ${rem}s`
+  const h = Math.floor(m / 60)
+  const remM = m % 60
+  return `${h}h ${remM}m`
 }
 
 export function sortResults(
@@ -183,16 +189,16 @@ export const ResultCard: Component<ResultCardProps> = props => {
 
         <div class="flex items-center gap-3 shrink-0">
           <Show when={props.run.cancelled}>
-            <span class="text-red-400 text-xs" title="Run was manually stopped">🛑 Cancelled</span>
+            <span class="text-red-400 text-xs" title="运行已被手动停止">🛑 已取消</span>
           </Show>
           <Show when={props.run.completed !== true && !props.run.cancelled}>
-            <span class="text-yellow-400 text-xs" title="Run did not finish all questions">🚧 Incomplete</span>
+            <span class="text-yellow-400 text-xs" title="运行未回答所有问题">🚧 未完成</span>
           </Show>
           <Show when={props.onDelete}>
             <button
               class="text-[var(--color-fg-muted)] hover:text-[var(--color-danger)] transition p-1 rounded"
               onClick={handleDeleteClick}
-              title="Delete this test run"
+              title="删除此次测试运行"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="3 6 5 6 21 6" />
@@ -211,22 +217,22 @@ export const ResultCard: Component<ResultCardProps> = props => {
           <IconLegend />
           <div class="flex items-center justify-between mb-4">
             <label class="flex items-center gap-2 text-xs text-[var(--color-fg-muted)]">
-              Sort by:
+              排序方式：
               <select
                 class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-1 text-xs outline-none focus:border-[var(--color-accent)]"
                 value={sortBy()}
                 onChange={setSort}
                 onClick={(e) => e.stopPropagation()}
               >
-                <option value="accuracy">Accuracy</option>
-                <option value="elapsed">Elapsed Time</option>
+                <option value="accuracy">准确率</option>
+                <option value="elapsed">耗时</option>
               </select>
             </label>
             <button
               class="bg-[var(--color-card)] border border-[var(--color-accent)]/50 text-[var(--color-accent)] text-xs font-medium px-4 py-1.5 rounded-lg hover:bg-[var(--color-accent)] hover:text-white transition"
               onClick={openDetail}
             >
-              Detailed Comparison →
+              详细对比 →
             </button>
           </div>
 
@@ -244,10 +250,10 @@ export const ResultCard: Component<ResultCardProps> = props => {
 
       <ConfirmModal
         open={confirmOpen()}
-        title="Delete Test Run"
-        message={`Are you sure you want to delete test run #${props.run.run_id}? This action cannot be undone.`}
-        confirmText="Delete"
-        cancelText="Cancel"
+        title="删除测试运行"
+        message={`确定要删除测试运行 #${props.run.run_id} 吗？此操作无法撤销。`}
+        confirmText="删除"
+        cancelText="取消"
         danger
         onConfirm={handleDeleteConfirm}
         onCancel={handleDeleteCancel}
@@ -264,6 +270,7 @@ interface ModelRowProps {
 
 const ModelRow: Component<ModelRowProps> = props => {
   const [expanded, setExpanded] = createSignal(false)
+  const [responseExpanded, setResponseExpanded] = createSignal<string | null>(null)
 
   const totalRetries = () =>
     props.result.details.reduce((sum, d) => sum + (d.retries || 0), 0)
@@ -290,10 +297,10 @@ const ModelRow: Component<ModelRowProps> = props => {
       >
         <div class="flex items-center gap-2">
           <Show when={props.isFastest}>
-            <span class="text-[var(--color-accent)] text-sm" title="Fastest model">⚡</span>
+            <span class="text-[var(--color-accent)] text-sm" title="最快模型">⚡</span>
           </Show>
           <Show when={props.isBestAccuracy}>
-            <span class="score-diamond text-sm font-semibold" title="Best accuracy">🏆</span>
+            <span class="score-diamond text-sm font-semibold" title="最佳准确率">🏆</span>
           </Show>
           <span class="font-medium">{props.result.model_id}</span>
           <span class="text-[var(--color-fg-muted)] text-xs ml-2">{props.result.provider_name}</span>
@@ -305,30 +312,30 @@ const ModelRow: Component<ModelRowProps> = props => {
             </span>
           </Show>
           <span class="text-[var(--color-fg-muted)]">
-            {props.result.avg_latency_ms.toFixed(0)}ms avg
+            {props.result.avg_latency_ms.toFixed(0)}ms 平均
           </span>
           <Show when={totalRetries() > 0}>
-            <span class="text-orange-400" title={`Retried ${totalRetries()} time(s) total`}>
+            <span class="text-orange-400" title={`共重试 ${totalRetries()} 次`}>
               🔄{totalRetries()}
             </span>
           </Show>
           <Show when={totalTimeouts() > 0}>
-            <span class="text-[var(--color-danger)]" title={`${totalTimeouts()} question(s) timed out (60s)`}>
+            <span class="text-[var(--color-danger)]" title={`${totalTimeouts()} 个问题超时（60秒）`}>
               ⏱{totalTimeouts()}
             </span>
           </Show>
           <Show when={totalErrors() > 0}>
-            <span class="text-rose-400" title={`${totalErrors()} question(s) had API/network errors`}>
+            <span class="text-rose-400" title={`${totalErrors()} 个问题出现API/网络错误`}>
               ✗!{totalErrors()}
             </span>
           </Show>
           <Show when={totalCancelled() > 0}>
-            <span class="text-red-400" title={`${totalCancelled()} question(s) cancelled by user`}>
+            <span class="text-red-400" title={`${totalCancelled()} 个问题被用户取消`}>
               🛑{totalCancelled()}
             </span>
           </Show>
           <Show when={isIncomplete()}>
-            <span class="text-yellow-400" title={`Only ${props.result.completed}/${props.result.total} questions finished`}>
+            <span class="text-yellow-400" title={`仅完成 ${props.result.completed}/${props.result.total} 个问题`}>
               🚧
             </span>
           </Show>
@@ -356,42 +363,51 @@ const ModelRow: Component<ModelRowProps> = props => {
           <div class="flex flex-col gap-1">
             <For each={props.result.details}>
               {d => (
-                <div class="flex items-start gap-2 text-xs">
-                  <span class={d.correct ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"}>
-                    {d.correct ? "✓" : "✗"}
-                  </span>
-                  <span class="flex-1 text-[var(--color-fg-muted)] truncate" title={d.prompt}>
-                    {d.prompt}
-                  </span>
-                  <span class="text-[var(--color-fg-muted)]">{d.expected}</span>
-                  <span class="text-[var(--color-fg-muted)]">→</span>
-                  <span
-                    class={d.correct ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"}
-                  >
-                    {d.actual || d.error}
-                  </span>
-                  <span class="text-[var(--color-fg-muted)] w-14 text-right">
-                    {d.latency_ms.toFixed(0)}ms
-                  </span>
-                  {d.timed_out ? (
-                    <span class="text-[var(--color-danger)] w-8 text-center" title={`Timed out after ${d.retries || 0} retries`}>
-                      ⏱
+                <div class="flex flex-col gap-0.5">
+                  <div class="flex items-start gap-2 text-xs">
+                    <span class={d.correct ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"}>
+                      {d.correct ? "✓" : "✗"}
                     </span>
-                  ) : d.cancelled ? (
-                    <span class="text-red-400 w-8 text-center" title="Cancelled by user">
-                      🛑
+                    <span class="flex-1 text-[var(--color-fg-muted)] truncate" title={d.prompt}>
+                      {d.prompt}
                     </span>
-                  ) : d.error ? (
-                    <span class="text-rose-400 w-8 text-center" title={`Error: ${d.error}`}>
-                      ✗!
+                    <span class="text-[var(--color-fg-muted)]">{d.expected}</span>
+                    <span class="text-[var(--color-fg-muted)]">→</span>
+                    <button
+                      class={`text-left max-w-[200px] truncate ${d.correct ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"}`}
+                      onClick={(e) => { e.stopPropagation(); setResponseExpanded(responseExpanded() === d.prompt ? null : d.prompt) }}
+                      title="点击展开完整响应"
+                    >
+                      {d.actual || d.error}
+                    </button>
+                    <span class="text-[var(--color-fg-muted)] w-14 text-right">
+                      {d.latency_ms.toFixed(0)}ms
                     </span>
-                  ) : d.retries && d.retries > 0 ? (
-                    <span class="text-orange-400 w-8 text-center" title={`Retried ${d.retries} time(s)`}>
-                      🔄{d.retries}
-                    </span>
-                  ) : (
-                    <span class="w-8" />
-                  )}
+                    {d.timed_out ? (
+                      <span class="text-[var(--color-danger)] w-8 text-center" title={`重试 ${d.retries || 0} 次后超时`}>
+                        ⏱
+                      </span>
+                    ) : d.cancelled ? (
+                      <span class="text-red-400 w-8 text-center" title="用户取消">
+                        🛑
+                      </span>
+                    ) : d.error ? (
+                      <span class="text-rose-400 w-8 text-center" title={`错误：${d.error}`}>
+                        ✗!
+                      </span>
+                    ) : d.retries && d.retries > 0 ? (
+                      <span class="text-orange-400 w-8 text-center" title={`已重试 ${d.retries} 次`}>
+                        🔄{d.retries}
+                      </span>
+                    ) : (
+                      <span class="w-8" />
+                    )}
+                  </div>
+                  <Show when={responseExpanded() === d.prompt && d.actual}>
+                    <div class="ml-6 pl-3 border-l border-[var(--color-border)] py-2">
+                      <MarkdownRenderer content={d.actual!} class="text-xs" />
+                    </div>
+                  </Show>
                 </div>
               )}
             </For>

@@ -12,8 +12,8 @@ interface ConfirmModalProps {
 }
 
 const ConfirmModal: Component<ConfirmModalProps> = props => {
-  const confirmText = () => props.confirmText || "Confirm"
-  const cancelText = () => props.cancelText || "Cancel"
+  const confirmText = () => props.confirmText || "确认"
+  const cancelText = () => props.cancelText || "取消"
 
   return (
     <Show when={props.open}>

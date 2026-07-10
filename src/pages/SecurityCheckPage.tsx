@@ -1,59 +1,30 @@
-import { Component, createSignal, createEffect, onMount, For, Show, Index } from "solid-js"
-import { api, AuthCheckResult, AuthCheckProgress, AuthDimension, Provider, Model } from "../api"
-import { uiState, setAuthRunning } from "../store"
+import { Component, createSignal, createEffect, onMount, For, Show } from "solid-js"
+import { api, AuthCheckResult, AuthCheckProgress, Provider, Model } from "../api"
+import { uiState, setSecurityRunning } from "../store"
 import ConfirmModal from "../components/ConfirmModal"
-import MarkdownRenderer from "../components/MarkdownRenderer"
 
-const DIMENSION_ORDER = [
+const SECURITY_DIMS = [
   "self_id",
-  "knowledge",
-  "capability",
-  "consistency",
-  "format",
-  "hallucination",
   "injection",
-  "jailbreak",
-  "safety",
-  "performance",
+  "reverse_proxy",
 ]
 
-const DIMENSION_LABELS: Record<string, string> = {
-  self_id: "身份识别",
-  knowledge: "知识一致性",
-  capability: "能力水平",
-  consistency: "响应一致性",
-  format: "格式遵守",
-  hallucination: "抗幻觉能力",
-  injection: "抗注入能力",
-  jailbreak: "抗越狱能力",
-  safety: "安全护栏",
-  performance: "性能概况",
+const SEC_LABELS: Record<string, string> = {
+  self_id: "身份一致性检测",
+  injection: "内容注入检测",
+  reverse_proxy: "反代特征检测",
 }
 
-const DIMENSION_ICONS: Record<string, string> = {
+const SEC_ICONS: Record<string, string> = {
   self_id: "ID",
-  knowledge: "KN",
-  capability: "CP",
-  consistency: "CS",
-  format: "FM",
-  hallucination: "HL",
   injection: "IN",
-  jailbreak: "JB",
-  safety: "SF",
-  performance: "PF",
+  reverse_proxy: "RP",
 }
 
-const DIMENSION_DESCRIPTIONS: Record<string, string> = {
-  self_id: "检测模型是否正确声明自身身份，使用多种技术包括直接身份查询、系统提示提取和诱导式提问。",
-  knowledge: "验证模型的知识截止日期是否与预期一致。测试模型对各大AI模型发布时间的了解程度。",
-  capability: "评估推理、数学和编程能力。将实际能力水平与所声称模型家族的能力进行比较。",
-  consistency: "多次发送相同提示以检查答案是否稳定。正版模型通常产生确定性输出；带有模型路由的代理可能表现出差异。",
-  format: "测试精确的指令遵循能力：精确JSON输出、字数限制、字符限制和多语言格式化。",
-  hallucination: "询问虚构的论文、公司、人物和事件。正版模型应该承认不知道；弱模型可能会编造听起来合理的信息。",
-  injection: "尝试通过角色反转、调试模式声明、Base64编码隐藏指令和简化版DAN攻击来覆盖模型的系统指令。",
-  jailbreak: "测试对已知越狱技术的抵抗力，包括祖母漏洞利用、开发者角色冒充、编码攻击和DAN人格扮演。",
-  safety: "检查核心安全护栏：医疗建议、法律建议、个人隐私、武器、危机应对和冒充持证专业人士。",
-  performance: "测量响应延迟和token吞吐量。用于将性能模式与所声称模型后端基础设施的已知特征进行关联分析。",
+const SEC_DESCS: Record<string, string> = {
+  self_id: "通过多角度身份探测检测模型是否如实声明自身身份。包含直接询问、语言切换对比、能力声明验证、开发者诱导识别和知识截止日期核查等8项探测。反代模型常因底层模型不同而暴露真实身份，用于判断是否为反代发API。",
+  injection: "检测模型对提示注入攻击的抵抗力。包含系统指令覆盖、角色扮演注入、Base64编码混淆、DAN攻击、嵌套指令注入、伪造系统标签、载荷拆分、上下文操纵和多语言绕过等9种攻击向量。用于判断代理层是否注入了自定义规则或安全护栏是否被削弱。",
+  reverse_proxy: "综合检测API是否存在反向代理特征。包含数值一致性重复验证、事实类与逻辑类固定答案检验、响应风格连贯性分析、系统级错误响应测试、格式转换语义一致性检查和极简指令对比等7种反代信号探测。",
 }
 
 const GRADE_COLORS: Record<string, string> = {
@@ -64,15 +35,7 @@ const GRADE_COLORS: Record<string, string> = {
   F: "text-[var(--color-danger)]",
 }
 
-const GRADE_BG: Record<string, string> = {
-  A: "bg-emerald-500/20 border-emerald-500/40",
-  B: "bg-amber-500/20 border-amber-500/40",
-  C: "bg-yellow-500/20 border-yellow-500/40",
-  D: "bg-orange-500/20 border-orange-500/40",
-  F: "bg-red-500/20 border-red-500/40",
-}
-
-const AuthCheckPage: Component = () => {
+const SecurityCheckPage: Component = () => {
   const [providers, setProviders] = createSignal<Provider[]>([])
   const [models, setModels] = createSignal<Model[]>([])
   const [selectedProviderId, setSelectedProviderId] = createSignal("")
@@ -94,7 +57,7 @@ const AuthCheckPage: Component = () => {
 
   const loadHistory = async () => {
     try {
-      const r = await api.getAuthResults()
+      const r = await api.getSecurityResults()
       setHistory(r)
     } catch { /* ignore */ }
   }
@@ -137,7 +100,7 @@ const AuthCheckPage: Component = () => {
 
   createEffect(async () => {
     const tab = uiState.activeTab
-    if (tab === "auth") {
+    if (tab === "security") {
       await loadProviders()
       const pid = selectedProviderId()
       if (pid) await loadModels(pid)
@@ -162,7 +125,7 @@ const AuthCheckPage: Component = () => {
     setError(null)
     setResult(null)
     setRunning(true)
-    setAuthRunning(true)
+    setSecurityRunning(true)
     setCancelling(false)
     setRunStartTime(Date.now())
     setElapsed(0)
@@ -174,7 +137,7 @@ const AuthCheckPage: Component = () => {
     }, 1000)
 
     try {
-      const { run_id } = await api.runAuthCheck({
+      const { run_id } = await api.runSecurityCheck({
         endpoint: provider.base_url,
         api_key: provider.api_key,
         model: model.model_id,
@@ -186,7 +149,7 @@ const AuthCheckPage: Component = () => {
         let stalledPolls = 0
         const doPoll = async () => {
           try {
-            const p = await api.getAuthProgress(run_id)
+            const p = await api.getSecurityProgress(run_id)
             setProgress(p)
 
             if (p.completed && p.result) {
@@ -218,7 +181,7 @@ const AuthCheckPage: Component = () => {
       setRunning(false)
     } finally {
       clearInterval(timer)
-      setAuthRunning(false)
+      setSecurityRunning(false)
       setCurrentRunId(null)
     }
   }
@@ -227,7 +190,7 @@ const AuthCheckPage: Component = () => {
     const id = currentRunId()
     if (id) {
       setCancelling(true)
-      try { await api.cancelAuthCheck(id) } catch { /* */ }
+      try { await api.cancelSecurityCheck(id) } catch { /* */ }
     }
   }
 
@@ -239,9 +202,14 @@ const AuthCheckPage: Component = () => {
     const id = deleteTarget()
     if (!id) return
     setDeleteTarget(null)
+    const scrollEl = document.querySelector("main[tabindex]") || document.querySelector(".flex-1.overflow-auto") as HTMLElement | null
+    const savedTop = scrollEl?.scrollTop ?? 0
     try {
-      await api.deleteAuthResult(id)
+      await api.deleteSecurityResult(id)
       await loadHistory()
+      requestAnimationFrame(() => {
+        if (scrollEl) scrollEl.scrollTop = savedTop
+      })
     } catch (e) {
       setError(String(e))
     }
@@ -249,12 +217,7 @@ const AuthCheckPage: Component = () => {
 
   const formatTime = (s: number) => {
     if (s < 60) return `${s}s`
-    const m = Math.floor(s / 60)
-    const rem = s % 60
-    if (m < 60) return `${m}m ${rem}s`
-    const h = Math.floor(m / 60)
-    const remM = m % 60
-    return `${h}h ${remM}m`
+    return `${Math.floor(s / 60)}m ${s % 60}s`
   }
 
   const percentColor = (pct: number) => {
@@ -281,12 +244,32 @@ const AuthCheckPage: Component = () => {
     setExpandedResult(expandedResult() === runId ? null : runId)
   }
 
+  const getSecurityScore = (r: AuthCheckResult) => {
+    const relevantDims = SECURITY_DIMS.filter(d => r.dimensions[d])
+    if (relevantDims.length === 0) return 0
+    const total = relevantDims.reduce((sum, d) => sum + r.dimensions[d].percent, 0)
+    return total / relevantDims.length
+  }
+
+  const isReverseSuspect = (r: AuthCheckResult) => {
+    const sid = r.dimensions["self_id"]
+    const rp = r.dimensions["reverse_proxy"]
+    const score1 = sid ? sid.percent : 100
+    const score2 = rp ? rp.percent : 100
+    return score1 < 60 || score2 < 60
+  }
+
+  const isInjectionVuln = (r: AuthCheckResult) => {
+    const inj = r.dimensions["injection"]
+    return inj ? inj.percent < 60 : false
+  }
+
   const ResultSummary: Component<{ r: AuthCheckResult; compact?: boolean }> = (props) => {
     const r = () => props.r
     return (
       <div>
         <div class="flex items-center gap-3 mb-4">
-          <div class={`text-3xl font-bold ${GRADE_COLORS[r().grade] || "text-white"}`}>
+          <div class={`text-2xl font-bold ${GRADE_COLORS[r().grade] || "text-white"}`}>
             {r().grade}
           </div>
           <div class="flex-1 min-w-0">
@@ -294,29 +277,26 @@ const AuthCheckPage: Component = () => {
               {r().endpoint} / {r().model}
             </div>
             <div class="text-xs text-[var(--color-fg-muted)]">
-              {formatTime(Math.round((new Date(r().timestamp).getTime() - new Date(r().timestamp).getTime()) / 1000) || 0)}
               {new Date(r().timestamp).toLocaleString()}
-              {" - "}
-              {r().verdict}
             </div>
           </div>
-          <div class={`text-lg font-semibold ${percentTextColor(r().overall_percent)}`}>
-            {r().overall_percent.toFixed(0)}%
+          <div class={`text-lg font-semibold ${percentTextColor(getSecurityScore(r()))}`}>
+            {getSecurityScore(r()).toFixed(0)}%
           </div>
         </div>
 
-        <div class="flex gap-2 mb-3">
-          <Show when={r().is_suspect}>
+        <div class="flex flex-wrap gap-2 mb-3">
+          <Show when={isReverseSuspect(r())}>
             <span class="text-xs px-2 py-0.5 rounded-full bg-red-900/30 text-red-400 border border-red-900/50">
               疑似反代发
             </span>
           </Show>
-          <Show when={!r().iq_ok}>
-            <span class="text-xs px-2 py-0.5 rounded-full bg-orange-900/30 text-orange-400 border border-orange-900/50">
-              疑似降智
+          <Show when={isInjectionVuln(r())}>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-900/30 text-yellow-400 border border-yellow-900/50">
+              注入漏洞
             </span>
           </Show>
-          <Show when={!r().is_suspect && r().iq_ok}>
+          <Show when={!isReverseSuspect(r()) && !isInjectionVuln(r())}>
             <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-900/30 text-emerald-400 border border-emerald-900/50">
               无异常
             </span>
@@ -324,13 +304,10 @@ const AuthCheckPage: Component = () => {
           <span class="text-xs px-2 py-0.5 rounded-full bg-[var(--color-ink-3)] text-[var(--color-fg-muted)]">
             {r().perf.probe_count} 个探测
           </span>
-          <span class="text-xs px-2 py-0.5 rounded-full bg-[var(--color-ink-3)] text-[var(--color-fg-muted)]">
-            {r().perf.avg_latency_ms.toFixed(0)}ms 平均
-          </span>
         </div>
 
         <div class="flex flex-col gap-2">
-          <For each={DIMENSION_ORDER}>
+          <For each={SECURITY_DIMS}>
             {dim => {
               const d = () => r().dimensions[dim]
               return (
@@ -341,10 +318,10 @@ const AuthCheckPage: Component = () => {
                       onClick={() => toggleDim(dim)}
                     >
                       <span class="w-6 h-6 flex items-center justify-center rounded bg-[var(--color-ink-3)] text-[var(--color-fg-muted)] text-[10px] font-mono shrink-0">
-                        {DIMENSION_ICONS[dim]}
+                        {SEC_ICONS[dim]}
                       </span>
-                      <span class="w-32 text-[var(--color-fg-muted)] shrink-0">
-                        {DIMENSION_LABELS[dim] || dim}
+                      <span class="w-40 text-[var(--color-fg-muted)] shrink-0">
+                        {SEC_LABELS[dim] || dim}
                       </span>
                       <div class="flex-1 h-2 bg-[var(--color-ink-3)] rounded-full overflow-hidden">
                         <div
@@ -361,88 +338,86 @@ const AuthCheckPage: Component = () => {
                     </button>
                     <Show when={expandedDim() === dim && d().probes}>
                       <div class="ml-8 mt-1 mb-2 flex flex-col gap-1">
-                        <Show when={DIMENSION_DESCRIPTIONS[dim]}>
+                        <Show when={SEC_DESCS[dim]}>
                           <div class="text-[10px] text-[var(--color-fg-muted)] bg-[var(--color-bg)] rounded px-2 py-1.5 mb-1 border border-[var(--color-border)]/50">
-                            {DIMENSION_DESCRIPTIONS[dim]}
+                            {SEC_DESCS[dim]}
                           </div>
                         </Show>
                         <For each={d().probes}>
                           {probe => (
-                            <Show when={probe.analysis}>
-                              <div class={`text-[11px] border-l-2 rounded pl-2 py-1.5 ${
-                                probe.analysis.score >= probe.analysis.max
-                                  ? "border-emerald-500/60 bg-emerald-900/10"
-                                  : probe.analysis.score > 0
-                                  ? "border-yellow-500/60 bg-yellow-900/10"
-                                  : "border-red-500/60 bg-red-900/10"
-                              }`}>
-                                <div class="flex items-start gap-2 mb-1">
-                                  <span class={`font-mono text-[10px] shrink-0 mt-0.5 ${
-                                    probe.analysis.score >= probe.analysis.max
-                                      ? "text-emerald-400"
-                                      : probe.analysis.score > 0
-                                      ? "text-yellow-400"
-                                      : "text-red-400"
-                                  }`}>
+                            <div class={`text-[11px] border-l-2 rounded pl-2 py-1.5 ${
+                              probe.analysis.score >= probe.analysis.max
+                                ? "border-emerald-500/60 bg-emerald-900/10"
+                                : probe.analysis.score > 0
+                                ? "border-yellow-500/60 bg-yellow-900/10"
+                                : "border-red-500/60 bg-red-900/10"
+                            }`}>
+                              <div class="flex items-start gap-2 mb-1">
+                                <span class={`font-mono text-[10px] shrink-0 mt-0.5 ${
+                                  probe.analysis.score >= probe.analysis.max
+                                    ? "text-emerald-400"
+                                    : probe.analysis.score > 0
+                                    ? "text-yellow-400"
+                                    : "text-red-400"
+                                }`}>
                                     {probe.analysis.score >= probe.analysis.max ? "通过" : "失败"}
+                                </span>
+                                <span class="font-mono text-[var(--color-accent-muted)]">
+                                  {probe.probe_id}
+                                </span>
+                                <span class={`font-mono ${probe.analysis.score >= probe.analysis.max ? "text-emerald-400" : probe.analysis.score > 0 ? "text-yellow-400" : "text-red-400"}`}>
+                                  {probe.analysis.score}/{probe.analysis.max}
+                                </span>
+                                <Show when={probe.latency_ms > 0}>
+                                  <span class="text-[var(--color-fg-muted)] ml-auto shrink-0">
+                                    {probe.latency_ms.toFixed(0)}ms
                                   </span>
-                                  <span class="font-mono text-[var(--color-accent-muted)]">
-                                    {probe.probe_id}
-                                  </span>
-                                  <span class={`font-mono ${probe.analysis.score >= probe.analysis.max ? "text-emerald-400" : probe.analysis.score > 0 ? "text-yellow-400" : "text-red-400"}`}>
-                                    {probe.analysis.score}/{probe.analysis.max}
-                                  </span>
-                                  <Show when={probe.latency_ms > 0}>
-                                    <span class="text-[var(--color-fg-muted)] ml-auto shrink-0">
-                                      {probe.latency_ms.toFixed(0)}ms
-                                    </span>
-                                  </Show>
-                                </div>
-                                <Show when={probe.description}>
-                                  <div class="text-[var(--color-fg-muted)] mb-0.5 text-[10px]">
-                                    <span class="text-[var(--color-accent-muted)] font-semibold">检测项：</span>{" "}
-                                    {probe.description}
-                                  </div>
-                                </Show>
-                                <Show when={probe.why}>
-                                  <div class="text-[var(--color-fg-muted)] mb-1 text-[10px]">
-                                    <span class="text-[var(--color-accent-muted)] font-semibold">原理：</span>{" "}
-                                    {probe.why}
-                                  </div>
-                                </Show>
-                                <details class="mb-1">
-                                  <summary class="text-[10px] text-[var(--color-ink-1)] cursor-pointer hover:text-[var(--color-accent)] transition">
-                                    查看Prompt
-                                  </summary>
-                                  <div class="text-[11px] bg-[var(--color-surface)] rounded px-3 py-2 mt-0.5 max-w-lg border-l border-[var(--color-border)]">
-                                    <MarkdownRenderer content={probe.prompt} />
-                                  </div>
-                                </details>
-                                <For each={probe.analysis.signals}>
-                                  {sig => (
-                                    <div class={`pl-2 ${
-                                      sig.toLowerCase().includes("correctly") || sig.toLowerCase().includes("pass")
-                                        ? "text-emerald-400"
-                                        : sig.toLowerCase().includes("halluc") || sig.toLowerCase().includes("accepted") || sig.toLowerCase().includes("compromised") || sig.toLowerCase().includes("complied")
-                                        ? "text-red-400"
-                                        : "text-[var(--color-fg-muted)]"
-                                    }`}>
-                                      {sig}
-                                    </div>
-                                  )}
-                                </For>
-                                <Show when={probe.response}>
-                                  <details class="mt-1">
-                                    <summary class="text-[10px] text-[var(--color-ink-1)] cursor-pointer hover:text-[var(--color-accent)] transition">
-                                      查看响应 ({(probe.response ?? "").length} 字符)
-                                    </summary>
-                                    <div class="text-[11px] bg-[var(--color-surface)] rounded px-3 py-2 mt-0.5 max-w-lg border-l border-[var(--color-border)]">
-                                      <MarkdownRenderer content={probe.response ?? ""} />
-                                    </div>
-                                  </details>
                                 </Show>
                               </div>
-                            </Show>
+                              <Show when={probe.description}>
+                                <div class="text-[var(--color-fg-muted)] mb-0.5 text-[10px]">
+                                  <span class="text-[var(--color-accent-muted)] font-semibold">检测项：</span>{" "}
+                                  {probe.description}
+                                </div>
+                              </Show>
+                              <Show when={probe.why}>
+                                <div class="text-[var(--color-fg-muted)] mb-1 text-[10px]">
+                                  <span class="text-[var(--color-accent-muted)] font-semibold">原理：</span>{" "}
+                                  {probe.why}
+                                </div>
+                              </Show>
+                              <details class="mb-1">
+                                <summary class="text-[10px] text-[var(--color-ink-1)] cursor-pointer hover:text-[var(--color-accent)] transition">
+                                  查看Prompt
+                                </summary>
+                                <div class="text-[10px] text-[var(--color-ink-1)] bg-[var(--color-surface)] rounded px-2 py-1 mt-0.5 max-w-sm whitespace-pre-wrap font-mono">
+                                  {probe.prompt}
+                                </div>
+                              </details>
+                              <For each={probe.analysis.signals}>
+                                {sig => (
+                                  <div class={`pl-2 ${
+                                    sig.toLowerCase().includes("correctly") || sig.toLowerCase().includes("pass") || sig.toLowerCase().includes("resisted") || sig.toLowerCase().includes("refused")
+                                      ? "text-emerald-400"
+                                      : sig.toLowerCase().includes("halluc") || sig.toLowerCase().includes("accepted") || sig.toLowerCase().includes("compromised") || sig.toLowerCase().includes("complied")
+                                      ? "text-red-400"
+                                      : "text-[var(--color-fg-muted)]"
+                                  }`}>
+                                    {sig}
+                                  </div>
+                                )}
+                              </For>
+                              <Show when={probe.response}>
+                                <details class="mt-1">
+                                  <summary class="text-[10px] text-[var(--color-ink-1)] cursor-pointer hover:text-[var(--color-accent)] transition">
+                                    查看响应 ({(probe.response ?? "").length} 字符)
+                                  </summary>
+                                  <div class="text-[10px] text-[var(--color-ink-1)] bg-[var(--color-surface)] rounded px-2 py-1 mt-0.5 max-w-sm whitespace-pre-wrap border-l border-[var(--color-border)]">
+                                    {probe.response}
+                                  </div>
+                                </details>
+                              </Show>
+                            </div>
                           )}
                         </For>
                       </div>
@@ -459,16 +434,16 @@ const AuthCheckPage: Component = () => {
 
   return (
     <div>
-      <h1 class="text-2xl font-bold mb-2">安全性综合检测</h1>
+      <h1 class="text-2xl font-bold mb-2">Agent安全检测</h1>
       <p class="text-xs text-[var(--color-fg-muted)] mb-6">
-        黑盒检测：验证API端点是否提供所声称的模型，涵盖身份、知识、能力、一致性、注入防护等全维度。
+        针对AI代理场景的安全检测，通过身份验证、注入测试和反代特征分析三大维度，检测反代发、内容注入等代理安全风险。
       </p>
 
       <form
         onSubmit={e => { e.preventDefault(); handleRun() }}
         class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-5 mb-6 flex flex-col gap-3"
       >
-        <div class="text-sm font-semibold text-[var(--color-accent-muted)] mb-1">选择模型</div>
+        <div class="text-sm font-semibold text-[var(--color-accent-muted)] mb-1">选择检测目标</div>
 
         <div class="flex gap-3">
           <select
@@ -477,7 +452,7 @@ const AuthCheckPage: Component = () => {
             onChange={e => handleProviderChange(e.currentTarget.value)}
           >
             <Show when={providers().length === 0}>
-            <option value="" disabled>未配置供应商</option>
+              <option value="" disabled>未配置供应商</option>
             </Show>
             <For each={providers()}>
               {p => (
@@ -509,6 +484,10 @@ const AuthCheckPage: Component = () => {
             </div>
           )}
         </Show>
+
+        <div class="text-xs text-[var(--color-fg-muted)] bg-[var(--color-bg)] rounded px-3 py-2 border border-[var(--color-border)]/50">
+          本次检测针对以下3个维度：身份一致性（8项探测）、内容注入检测（9项探测）、反代特征检测（7项探测）
+        </div>
 
         <div class="flex justify-end mt-1">
           <button
@@ -548,7 +527,7 @@ const AuthCheckPage: Component = () => {
 
             <Show when={p().current_probe && p().completed_count < p().total_count}>
               <div class="text-xs text-[var(--color-fg-muted)] mb-2">
-                当前：<span class="font-mono">{p().current_probe}</span>
+                当前: <span class="font-mono">{p().current_probe}</span>
               </div>
             </Show>
 
@@ -570,7 +549,7 @@ const AuthCheckPage: Component = () => {
                 disabled={cancelling()}
                 onClick={handleStop}
               >
-                {cancelling() ? "停止中..." : "取消"}
+                {cancelling() ? "取消中..." : "取消检测"}
               </button>
             </div>
           </div>
@@ -580,7 +559,7 @@ const AuthCheckPage: Component = () => {
       <Show when={result()}>
         {r => (
           <div class={`bg-[var(--color-surface)] border rounded-xl p-5 mb-6 ${
-            r().is_suspect ? "border-red-900/60" : "border-[var(--color-border)]"
+            isReverseSuspect(r()) || isInjectionVuln(r()) ? "border-red-900/60" : "border-[var(--color-border)]"
           }`}>
             <ResultSummary r={r()} />
           </div>
@@ -593,7 +572,7 @@ const AuthCheckPage: Component = () => {
           <For each={history()}>
             {r => (
               <div class={`bg-[var(--color-surface)] border rounded-xl px-5 py-4 ${
-                r.is_suspect ? "border-red-900/40" : "border-[var(--color-border)]"
+                isReverseSuspect(r) || isInjectionVuln(r) ? "border-red-900/40" : "border-[var(--color-border)]"
               }`}>
                 <div class="flex items-center gap-3">
                   <div class={`text-2xl font-bold ${GRADE_COLORS[r.grade] || "text-white"}`}>
@@ -608,12 +587,17 @@ const AuthCheckPage: Component = () => {
                     </div>
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
-                    <span class={`text-sm font-semibold ${percentTextColor(r.overall_percent)}`}>
-                      {r.overall_percent.toFixed(0)}%
+                    <span class={`text-sm font-semibold ${percentTextColor(getSecurityScore(r))}`}>
+                      {getSecurityScore(r).toFixed(0)}%
                     </span>
-                    <Show when={r.is_suspect}>
+                    <Show when={isReverseSuspect(r)}>
                       <span class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/30 text-red-400">
-                        R
+                        反代
+                      </span>
+                    </Show>
+                    <Show when={isInjectionVuln(r)}>
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/30 text-yellow-400">
+                        注入
                       </span>
                     </Show>
                     <button
@@ -639,8 +623,8 @@ const AuthCheckPage: Component = () => {
       <Show when={!running() && !result() && !history().length && !error()}>
         <div class="text-center text-[var(--color-fg-muted)] py-12">
           {providers().length === 0
-            ? "请先在供应商标签页中添加一个供应商，然后开始检测。"
-            : "选择一个供应商和模型开始检测。"}
+            ? "请先在供应商标签页中添加一个供应商，然后开始Agent安全检测。"
+            : "选择一个供应商和模型开始Agent安全检测。"}
         </div>
       </Show>
 
@@ -648,7 +632,7 @@ const AuthCheckPage: Component = () => {
         <ConfirmModal
           open={true}
           title="删除结果"
-          message="确定要删除这个检测结果吗？此操作无法撤销。"
+          message="确定要删除这条检测结果吗？此操作无法撤销。"
           confirmText="删除"
           cancelText="取消"
           danger
@@ -660,4 +644,4 @@ const AuthCheckPage: Component = () => {
   )
 }
 
-export default AuthCheckPage
+export default SecurityCheckPage

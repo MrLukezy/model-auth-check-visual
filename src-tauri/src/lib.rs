@@ -61,10 +61,19 @@ fn spawn_backend(backend_dir: &Path, python_cmd: &Path) -> Result<Child, String>
             "127.0.0.1",
             "--port",
             "8765",
+            "--log-level",
+            "warning",
+            "--no-access-log",
         ])
         .current_dir(backend_dir)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        // IMPORTANT: do NOT use Stdio::piped() here. server.py already writes its
+        // application logs to backend/server.log via a FileHandler. If stdout/stderr
+        // are piped but never drained, the OS pipe buffer (4-64 KB on Windows) fills
+        // up and every child write() blocks forever — freezing the uvicorn event loop
+        // and killing health checks / progress polling. Use null() to discard these
+        // streams safely.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| {
             format!(

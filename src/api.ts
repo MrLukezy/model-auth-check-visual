@@ -132,6 +132,89 @@ export interface AuthCheckProgress {
   result: AuthCheckResult | null
 }
 
+export interface LongContextTestDetail {
+  test_type: string
+  target_length: number
+  needle_position: string
+  question: string
+  expected: string
+  actual: string | null
+  correct: boolean
+  error: string | null
+  latency_ms: number
+  context_tokens: number
+}
+
+export interface LongContextLengthStats {
+  passed: number
+  total: number
+  details: LongContextTestDetail[]
+}
+
+export interface LongContextModelResult {
+  id: string
+  model_id: string
+  provider_name: string
+  passed: number
+  total: number
+  by_length: Record<string, LongContextLengthStats>
+  degradation_score: number
+  error: string | null
+}
+
+export interface LongContextRunResult {
+  run_id: string
+  timestamp: string
+  results: LongContextModelResult[]
+  total_models: number
+  total_passed: number
+  total_questions: number
+  test_types: string[]
+  context_lengths: number[]
+  num_tests_per_length: number
+  needle_positions: string[]
+  seed: number
+  completed: boolean
+  cancelled: boolean
+}
+
+export interface LongContextModelProgress {
+  model_id: string
+  provider_name: string
+  completed: number
+  total: number
+  by_length: Record<string, { passed: number; total: number }>
+  passed: number
+  error: string | null
+}
+
+export interface QuickTestResult {
+  model_id: string
+  passed: number
+  total: number
+  score: number
+  profile: string
+  category_stats: Record<string, number>
+  details: Array<{
+    category?: string
+    expected?: string
+    actual?: string
+    correct: boolean
+    error?: string | null
+    latency_ms: number
+  }>
+}
+
+export interface LongContextProgress {
+  run_id: string
+  running: boolean
+  completed: boolean
+  total_tests: number
+  completed_tests: number
+  models: Record<string, LongContextModelProgress>
+  elapsed_s: number
+}
+
 const BASE = "http://localhost:8765"
 const MAX_CONCURRENT = 4
 const inFlight: Map<string, Promise<any>> = new Map()
@@ -214,6 +297,48 @@ export const api = {
     fetchJson<AuthCheckResult>(`/api/auth-check/results/${runId}`),
   deleteAuthResult: (runId: string) =>
     fetchJson<void>(`/api/auth-check/results/${runId}`, { method: "DELETE" }),
+
+  runSecurityCheck: (d: { endpoint: string; api_key: string; model: string; api_type: string }) =>
+    fetchJson<{ run_id: string }>("/api/security-check/run", {
+      method: "POST",
+      body: JSON.stringify(d),
+    }, 120000),
+  getSecurityProgress: (runId: string) =>
+    fetchJson<AuthCheckProgress>(`/api/security-check/progress/${runId}`),
+  cancelSecurityCheck: (runId: string) =>
+    fetchJson<{ ok: boolean }>(`/api/security-check/cancel/${runId}`, { method: "POST" }),
+  getSecurityResults: () => fetchJson<AuthCheckResult[]>("/api/security-check/results"),
+  getSecurityResultById: (runId: string) =>
+    fetchJson<AuthCheckResult>(`/api/security-check/results/${runId}`),
+  deleteSecurityResult: (runId: string) =>
+    fetchJson<void>(`/api/security-check/results/${runId}`, { method: "DELETE" }),
+
+  runLongContext: (d: {
+    model_ids: string[]
+    test_types: string[]
+    context_lengths: number[]
+    num_tests_per_length: number
+    needle_positions: string[]
+  }) =>
+    fetchJson<{ run_id: string }>("/api/long-context/run", {
+      method: "POST",
+      body: JSON.stringify(d),
+    }, 120000),
+  getLongContextProgress: (runId: string) =>
+    fetchJson<LongContextProgress>(`/api/long-context/progress/${runId}`),
+  cancelLongContext: (runId: string) =>
+    fetchJson<{ ok: boolean }>(`/api/long-context/cancel/${runId}`, { method: "POST" }),
+  getLongContextResults: () => fetchJson<LongContextRunResult[]>("/api/long-context/results"),
+  getLongContextResultById: (runId: string) =>
+    fetchJson<LongContextRunResult>(`/api/long-context/results/${runId}`),
+  deleteLongContextResult: (runId: string) =>
+    fetchJson<void>(`/api/long-context/results/${runId}`, { method: "DELETE" }),
+
+  quickTest: (d: { base_url: string; api_key: string; model_id: string; num_questions?: number; profile?: string }) =>
+    fetchJson<QuickTestResult>("/api/quick-test", {
+      method: "POST",
+      body: JSON.stringify(d),
+    }, 120000),
 }
 
 async function fetchJson<T>(

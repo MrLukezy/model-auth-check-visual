@@ -4,22 +4,22 @@ import { ResultCard, formatElapsed, scoreColor, scoreBgColor } from "../componen
 import { usePolling } from "../hooks/usePolling"
 
 const PROFILES_LIST = [
-  { value: "programmer", label: "Programmer", desc: "CS25%+Math20%+Logic20%+Game15%+Safety10%+Common10%" },
-  { value: "full", label: "Full (8 categories)", desc: "All categories proportionally" },
-  { value: "math_logic", label: "Math & Logic", desc: "Math30%+Logic30%+CS20%+Common20%" },
-  { value: "safety", label: "Safety", desc: "Safety45%+Language25%+Psych15%+Common15%" },
-  { value: "quick", label: "Quick Screen", desc: "CS25%+Math25%+Logic20%+Common20%+Safety10%" },
+  { value: "programmer", label: "程序员", desc: "编程25%+数学20%+逻辑20%+游戏15%+安全10%+常识10%" },
+  { value: "full", label: "完整（8个类别）", desc: "所有类别按比例" },
+  { value: "math_logic", label: "数学与逻辑", desc: "数学30%+逻辑30%+编程20%+常识20%" },
+  { value: "safety", label: "安全", desc: "安全45%+语言25%+心理15%+常识15%" },
+  { value: "quick", label: "快速筛查", desc: "编程25%+数学25%+逻辑20%+常识20%+安全10%" },
 ]
 
 const CAT_LABELS: Record<string, string> = {
-  coding_cs: "CS",
-  math_reasoning: "Math",
-  logical_reasoning: "Logic",
-  safety_guard: "Safety",
-  common_science: "Common",
-  game_dev: "Game",
-  emotion_psychology: "Psych",
-  language_logic: "Language",
+  coding_cs: "编程",
+  math_reasoning: "数学",
+  logical_reasoning: "逻辑",
+  safety_guard: "安全",
+  common_science: "常识",
+  game_dev: "游戏",
+  emotion_psychology: "心理",
+  language_logic: "语言",
 }
 
 interface ModelProgress {
@@ -215,21 +215,26 @@ const TestsPage: Component = () => {
 
   const formatTime = (s: number) => {
     if (s < 60) return `${s}s`
-    return `${Math.floor(s / 60)}m ${s % 60}s`
+    const m = Math.floor(s / 60)
+    const rem = s % 60
+    if (m < 60) return `${m}m ${rem}s`
+    const h = Math.floor(m / 60)
+    const remM = m % 60
+    return `${h}h ${remM}m`
   }
 
   return (
     <div>
-      <h1 class="text-2xl font-bold mb-6">Tests</h1>
+      <h1 class="text-2xl font-bold mb-6">评测</h1>
 
       {/* Queue */}
       <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-5 mb-6">
         <div class="text-sm font-semibold text-[var(--color-fg-muted)] mb-3">
-          Test Queue ({queue().length})
+          测试队列（{queue().length}）
         </div>
         <Show
           when={queue().length > 0}
-          fallback={<div class="text-sm text-[var(--color-fg-muted)]">Queue is empty. Add models from the Models page.</div>}
+          fallback={<div class="text-sm text-[var(--color-fg-muted)]">队列为空。请在模型页面添加模型。</div>}
         >
           <div class="flex flex-wrap gap-2">
             <For each={queue()}>
@@ -254,7 +259,7 @@ const TestsPage: Component = () => {
         {stats => (
           <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-5 mb-6">
             <div class="text-sm font-semibold text-[var(--color-accent)] mb-2">
-              Question Bank: {stats().loaded ? `${stats().total.toLocaleString()} questions loaded` : "Not loaded"}
+              题库：{stats().loaded ? `已加载 ${stats().total.toLocaleString()} 个问题` : "未加载"}
             </div>
             <Show when={stats().loaded}>
               <div class="flex flex-wrap gap-2">
@@ -274,7 +279,7 @@ const TestsPage: Component = () => {
       {/* Config & Run */}
       <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-5 mb-6 flex flex-col gap-4">
         <div class="flex items-center gap-4 flex-wrap">
-          <label class="text-sm text-[var(--color-fg-muted)]">Profile:</label>
+          <label class="text-sm text-[var(--color-fg-muted)]">测评方案：</label>
           <select
             class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] transition"
             value={profile()}
@@ -285,7 +290,7 @@ const TestsPage: Component = () => {
             </For>
           </select>
 
-          <label class="text-sm text-[var(--color-fg-muted)]">Questions:</label>
+          <label class="text-sm text-[var(--color-fg-muted)]">题目数：</label>
           <select
             class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] transition"
             value={String(numTests())}
@@ -303,10 +308,10 @@ const TestsPage: Component = () => {
         <div class="flex items-center justify-between gap-3">
           <div class="text-xs text-[var(--color-fg-muted)] flex-1 min-w-0">
             {running()
-              ? `Running... ${formatTime(elapsed())}${stopping() ? " — stopping..." : ""}`
+              ? `运行中... ${formatTime(elapsed())}${stopping() ? " — 正在停止..." : ""}`
               : queue().length > 0
-              ? `${numTests()} random questions × ${queue().length} model(s) — same questions for all models (parallel)`
-              : "Add models to queue from Models page to start testing"}
+              ? `${numTests()} 道随机题 × ${queue().length} 个模型 — 所有模型使用相同题目（并行）`
+              : "请在模型页面将模型添加到队列以开始测试"}
           </div>
           <div class="flex items-center gap-2 shrink-0">
             <Show when={running()}>
@@ -314,12 +319,12 @@ const TestsPage: Component = () => {
                 class="bg-[var(--color-danger)] hover:bg-[var(--color-danger-hover)] text-white font-medium text-sm px-4 py-2 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
                 disabled={stopping()}
                 onClick={handleStop}
-                title="Stop the current test run"
+                title="停止当前测试运行"
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                   <rect x="4" y="4" width="16" height="16" rx="2" />
                 </svg>
-                {stopping() ? "Stopping..." : "Stop"}
+                {stopping() ? "停止中..." : "停止"}
               </button>
             </Show>
             <button
@@ -327,7 +332,7 @@ const TestsPage: Component = () => {
               disabled={running() || queue().length === 0 || !bankStats()?.loaded}
               onClick={handleRun}
             >
-              {running() ? `Running (${formatTime(elapsed())})...` : `Run Test`}
+              {running() ? `运行中（${formatTime(elapsed())}）...` : `开始测试`}
             </button>
           </div>
         </div>
@@ -340,7 +345,7 @@ const TestsPage: Component = () => {
       {/* Live progress */}
       <Show when={running()}>
         <div class="bg-[var(--color-surface)] border border-[var(--color-accent)]/40 rounded-xl p-5 mb-6">
-          <div class="text-sm font-semibold text-[var(--color-accent)] mb-4">Live Progress</div>
+          <div class="text-sm font-semibold text-[var(--color-accent)] mb-4">实时进度</div>
           <div class="flex flex-col gap-3">
             <For each={Object.values(progress())}>
               {p => (
@@ -349,10 +354,10 @@ const TestsPage: Component = () => {
                     <div class="flex items-center gap-2">
                       <span class="font-medium">{p.provider_name}: {p.model_id}</span>
                       <Show when={!p.started}>
-                        <span class="text-[var(--color-fg-muted)]">waiting...</span>
+                        <span class="text-[var(--color-fg-muted)]">等待中...</span>
                       </Show>
                       <Show when={p.started && !p.done}>
-                        <span class="text-[var(--color-accent)] animate-pulse">testing...</span>
+                        <span class="text-[var(--color-accent)] animate-pulse">测试中...</span>
                       </Show>
                       <Show when={p.done}>
                         <span class={scoreColor(p.passed, p.total)}>
@@ -393,7 +398,7 @@ const TestsPage: Component = () => {
       <Show when={latestRun()}>
         {run => (
           <>
-            <h2 class="text-sm font-semibold text-[var(--color-fg-muted)] mb-3">Latest Run</h2>
+            <h2 class="text-sm font-semibold text-[var(--color-fg-muted)] mb-3">最近一次运行</h2>
             <ResultCard run={run()} highlight />
           </>
         )}
@@ -401,7 +406,7 @@ const TestsPage: Component = () => {
 
       <Show when={!queue().length && !latestRun() && !running()}>
         <div class="text-center text-[var(--color-fg-muted)] py-12">
-          Add models to the queue from the Models page to start testing.
+          请在模型页面将模型添加到队列以开始测试。
         </div>
       </Show>
     </div>

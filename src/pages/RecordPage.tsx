@@ -55,7 +55,7 @@ const RecordPage: Component = () => {
     <div>
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold">
-          Run History <span class="text-sm font-normal text-[var(--color-fg-muted)] ml-2">({runs().length})</span>
+          运行历史 <span class="text-sm font-normal text-[var(--color-fg-muted)] ml-2">({runs().length})</span>
         </h1>
       </div>
 
@@ -66,12 +66,12 @@ const RecordPage: Component = () => {
       </Show>
 
       <Show when={loading()}>
-        <div class="text-center text-[var(--color-fg-muted)] py-12">Loading...</div>
+        <div class="text-center text-[var(--color-fg-muted)] py-12">加载中...</div>
       </Show>
 
       <Show when={!loading() && !runs().length}>
         <div class="text-center text-[var(--color-fg-muted)] py-12">
-          No test runs yet. Go to the Tests page to run your first evaluation.
+          暂无测试记录。请前往评测页面运行您的第一次评测。
         </div>
       </Show>
 
@@ -84,10 +84,10 @@ const RecordPage: Component = () => {
       <Show when={deleteTarget()}>
         <ConfirmModal
           open={true}
-          title="Delete Test Run"
-          message={`Delete test run #${deleteTarget()}? This cannot be undone.`}
-          confirmText="Delete"
-          cancelText="Cancel"
+          title="删除测试运行"
+          message={`确定要删除测试运行 #${deleteTarget()} 吗？此操作无法撤销。`}
+          confirmText="删除"
+          cancelText="取消"
           danger
           onConfirm={confirmDelete}
           onCancel={() => setDeleteTarget(null)}

@@ -21,7 +21,7 @@ const DetailPage: Component = () => {
           when={data()}
           fallback={
             <div class="text-center text-[var(--color-fg-muted)] py-12">
-              {data.loading ? "Loading..." : "Run not found."}
+              {data.loading ? "加载中..." : "未找到此次运行。"}
             </div>
           }
         >
@@ -119,7 +119,7 @@ const RunDetail: Component<{ run: TestRun }> = props => {
 
   const accuracySeries = () => [
     {
-      name: "Accuracy %",
+      name: "准确率 %",
       data: run().results.map(r =>
         r.total > 0 ? Math.round((r.passed / r.total) * 100) : 0,
       ),
@@ -143,7 +143,7 @@ const RunDetail: Component<{ run: TestRun }> = props => {
 
   const elapsedSeries = () => [
     {
-      name: "Total Elapsed (s)",
+      name: "总耗时（秒）",
       data: run().results.map(r => Math.round((r.elapsed_ms || 0) / 1000)),
     },
   ]
@@ -190,37 +190,37 @@ const RunDetail: Component<{ run: TestRun }> = props => {
       <div class="flex items-center justify-between mb-6">
         <div>
           <h1 class="text-2xl font-bold flex items-center gap-3">
-            Run <span class="font-mono text-[var(--color-accent)]">#{run().run_id}</span>
+            运行 <span class="font-mono text-[var(--color-accent)]">#{run().run_id}</span>
           </h1>
           <div class="text-sm text-[var(--color-fg-muted)] mt-1">
             {new Date(run().timestamp).toLocaleString()}
-            {run().profile && <span class="ml-3">profile: {run().profile}</span>}
-            {run().num_tests && <span class="ml-3">{run().num_tests} questions</span>}
-            {run().seed && <span class="ml-3">seed: {run().seed}</span>}
+            {run().profile && <span class="ml-3">方案：{run().profile}</span>}
+            {run().num_tests && <span class="ml-3">{run().num_tests} 题</span>}
+            {run().seed && <span class="ml-3">种子：{run().seed}</span>}
           </div>
         </div>
         <div class="text-right">
-          <div class="text-sm text-[var(--color-fg-muted)]">Overall</div>
+          <div class="text-sm text-[var(--color-fg-muted)]">总览</div>
           <div class={`text-3xl font-bold ${scoreColor(run().total_passed, run().total_questions)}`}>
             {pct()}%
           </div>
           <div class="text-sm text-[var(--color-fg-muted)]">
-            {run().total_passed}/{run().total_questions} ({run().total_models} models)
+            {run().total_passed}/{run().total_questions}（{run().total_models} 个模型）
           </div>
         </div>
       </div>
 
       <div class="grid grid-cols-2 gap-6 mb-6">
-        <ChartCard title="Accuracy by Model">
+        <ChartCard title="各模型准确率">
           <SolidApexCharts type="bar" options={accuracyOptions()} series={accuracySeries()} height={320} />
         </ChartCard>
-        <ChartCard title="Total Elapsed by Model">
+        <ChartCard title="各模型总耗时">
           <SolidApexCharts type="bar" options={elapsedOptions()} series={elapsedSeries()} height={320} />
         </ChartCard>
       </div>
 
       <Show when={allCats().length > 0}>
-        <ChartCard title="Category Breakdown per Model">
+        <ChartCard title="各模型分类明细">
           <SolidApexCharts
             type="bar"
             options={categoryData().options}
@@ -230,20 +230,20 @@ const RunDetail: Component<{ run: TestRun }> = props => {
         </ChartCard>
       </Show>
 
-      <h2 class="text-lg font-semibold mt-8 mb-4">Detailed Comparison</h2>
+      <h2 class="text-lg font-semibold mt-8 mb-4">详细对比</h2>
 
       <div class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl overflow-hidden mb-6">
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
               <tr class="bg-[var(--color-card)] text-[var(--color-fg-muted)] text-xs">
-                <th class="text-left px-4 py-3">Model</th>
-                <th class="text-left px-4 py-3">Provider</th>
-                <th class="text-right px-4 py-3">Accuracy</th>
-                <th class="text-right px-4 py-3">Passed</th>
-                <th class="text-right px-4 py-3">Elapsed</th>
-                <th class="text-right px-4 py-3">Avg Latency</th>
-                <th class="text-right px-4 py-3">Retries</th>
+                <th class="text-left px-4 py-3">模型</th>
+                <th class="text-left px-4 py-3">供应商</th>
+                <th class="text-right px-4 py-3">准确率</th>
+                <th class="text-right px-4 py-3">通过数</th>
+                <th class="text-right px-4 py-3">耗时</th>
+                <th class="text-right px-4 py-3">平均延迟</th>
+                <th class="text-right px-4 py-3">重试</th>
                 <For each={allCats()}>
                   {cat => <th class="text-right px-4 py-3">{CAT_LABELS[cat] || cat}</th>}
                 </For>
@@ -265,10 +265,10 @@ const RunDetail: Component<{ run: TestRun }> = props => {
                     <td class="px-4 py-3 font-medium relative z-10">
                       <div class="flex items-center gap-1">
                         <Show when={r.model_id === fastestModelId()}>
-                          <span class="text-[var(--color-accent)]" title="Fastest model">⚡</span>
+                          <span class="text-[var(--color-accent)]" title="最快模型">⚡</span>
                         </Show>
                         <Show when={r.model_id === bestAccuracyModelId()}>
-                          <span class="score-diamond font-semibold" title="Best accuracy">🏆</span>
+                          <span class="score-diamond font-semibold" title="最佳准确率">🏆</span>
                         </Show>
                         {r.model_id}
                       </div>
@@ -293,8 +293,8 @@ const RunDetail: Component<{ run: TestRun }> = props => {
                         const parts: string[] = []
                         return (
                           <div class="flex items-center justify-end gap-1">
-                            {rt > 0 && <span class="text-orange-400" title={`Retried ${rt} time(s)`}>🔄{rt}</span>}
-                            {to > 0 && <span class="text-[var(--color-danger)]" title={`${to} timed out (60s)`}>⏱{to}</span>}
+                            {rt > 0 && <span class="text-orange-400" title={`已重试 ${rt} 次`}>🔄{rt}</span>}
+                            {to > 0 && <span class="text-[var(--color-danger)]" title={`${to} 个超时（60秒）`}>⏱{to}</span>}
                             {rt === 0 && to === 0 && <span class="text-[var(--color-fg-muted)]">0</span>}
                           </div>
                         )
@@ -318,7 +318,7 @@ const RunDetail: Component<{ run: TestRun }> = props => {
         </div>
       </div>
 
-      <h2 class="text-lg font-semibold mt-8 mb-4">Provider Grouping</h2>
+      <h2 class="text-lg font-semibold mt-8 mb-4">供应商分组</h2>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <For each={providers()}>
           {group => (
@@ -330,7 +330,7 @@ const RunDetail: Component<{ run: TestRun }> = props => {
                     <div class="flex items-center justify-between">
                       <div class="flex items-center gap-1">
                         <Show when={r.model_id === fastestModelId()}>
-                          <span class="text-[var(--color-accent)]" title="Fastest model">⚡</span>
+                          <span class="text-[var(--color-accent)]" title="最快模型">⚡</span>
                         </Show>
                         <span>{r.model_id}</span>
                       </div>

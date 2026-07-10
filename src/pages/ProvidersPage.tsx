@@ -11,8 +11,8 @@ const PROVIDER_PRESETS = [
   { value: "zhipu", label: "Zhipu (GLM)", baseUrl: "https://open.bigmodel.cn/api/paas/v4", defaultModel: "glm-4-flash" },
   { value: "qwen", label: "Qwen (Tongyi)", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", defaultModel: "qwen-turbo" },
   { value: "minimax", label: "MiniMax", baseUrl: "https://api.minimax.chat/v1", defaultModel: "abab6.5-chat" },
-  { value: "ollama", label: "Ollama (local)", baseUrl: "http://localhost:11434", defaultModel: "llama3.2" },
-  { value: "custom", label: "Custom (Generic OpenAI)", baseUrl: "", defaultModel: "" },
+  { value: "ollama", label: "Ollama（本地）", baseUrl: "http://localhost:11434", defaultModel: "llama3.2" },
+  { value: "custom", label: "自定义（通用OpenAI）", baseUrl: "", defaultModel: "" },
 ]
 
 const ProvidersPage: Component = () => {
@@ -52,7 +52,7 @@ const ProvidersPage: Component = () => {
   const handleAdd = async (e: Event) => {
     e.preventDefault()
     if (!name().trim() || !baseUrl().trim() || !apiKey().trim()) {
-      setError("Please fill in all fields")
+      setError("请填写所有字段")
       return
     }
     setLoading(true)
@@ -91,9 +91,9 @@ const ProvidersPage: Component = () => {
     setSuccess(null)
     try {
       const models = await api.fetchProviderModels(providerId)
-      setSuccess(`Connected! Found ${models.length} model(s) from ${pName}`)
+      setSuccess(`已连接！从 ${pName} 找到 ${models.length} 个模型`)
     } catch (e) {
-      setError(`Test failed: ${e}`)
+      setError(`测试失败：${e}`)
     } finally {
       setLoading(false)
     }
@@ -101,13 +101,13 @@ const ProvidersPage: Component = () => {
 
   return (
     <div class="max-w-3xl">
-      <h1 class="text-2xl font-bold mb-6">Providers</h1>
+      <h1 class="text-2xl font-bold mb-6">供应商</h1>
 
       <form
         onSubmit={handleAdd}
         class="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl p-5 mb-6 flex flex-col gap-3"
       >
-        <div class="text-sm font-semibold text-[var(--color-accent-muted)] mb-1">Add Provider</div>
+        <div class="text-sm font-semibold text-[var(--color-accent-muted)] mb-1">添加供应商</div>
 
         <div class="flex gap-3">
           <select
@@ -121,7 +121,7 @@ const ProvidersPage: Component = () => {
           </select>
           <input
             class="flex-1 bg-[var(--color-input)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)] transition"
-            placeholder="Provider Name (auto-filled)"
+            placeholder="供应商名称（自动填充）"
             value={name()}
             onInput={e => setName(e.currentTarget.value)}
           />
@@ -129,7 +129,7 @@ const ProvidersPage: Component = () => {
 
         <input
           class="bg-[var(--color-input)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)] transition"
-          placeholder={preset().value === "ollama" ? "http://localhost:11434" : "Base URL (auto-filled based on provider)"}
+          placeholder={preset().value === "ollama" ? "http://localhost:11434" : "接口地址（根据供应商自动填充）"}
           value={baseUrl()}
           onInput={e => setBaseUrl(e.currentTarget.value)}
         />
@@ -138,7 +138,7 @@ const ProvidersPage: Component = () => {
           <input
             class="flex-1 bg-[var(--color-input)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)] transition font-mono"
             type={showKey() ? "text" : "password"}
-            placeholder={preset().value === "ollama" ? "Leave empty for local" : "sk-..."}
+            placeholder={preset().value === "ollama" ? "本地可留空" : "sk-..."}
             value={apiKey()}
             onInput={e => setApiKey(e.currentTarget.value)}
           />
@@ -147,7 +147,7 @@ const ProvidersPage: Component = () => {
             class="px-3 py-2 text-xs text-[var(--color-accent-muted)] hover:text-[var(--color-accent)] transition"
             onClick={() => setShowKey(!showKey())}
           >
-            {showKey() ? "Hide" : "Show"}
+            {showKey() ? "隐藏" : "显示"}
           </button>
         </div>
 
@@ -157,7 +157,7 @@ const ProvidersPage: Component = () => {
             disabled={loading()}
             class="bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white px-5 py-2 rounded-lg text-sm font-medium transition disabled:opacity-50"
           >
-            {loading() ? "Adding..." : "Add Provider"}
+            {loading() ? "添加中..." : "添加供应商"}
           </button>
         </div>
       </form>
@@ -175,7 +175,7 @@ const ProvidersPage: Component = () => {
       </Show>
 
       <div class="text-xs text-[var(--color-accent-muted)] px-4 py-2 mb-4 bg-amber-900/10 border-l-3 border-[var(--color-accent)] rounded-r-lg">
-        Provider configurations are saved locally. Ollama needs to be running locally.
+        供应商配置保存在本地。Ollama 需要在本地运行。
       </div>
 
       <div class="flex flex-col gap-3">
@@ -187,7 +187,7 @@ const ProvidersPage: Component = () => {
                   <span class="font-semibold">{p.name}</span>
                   {PROVIDER_PRESETS.find(pp => pp.label === p.name) && (
                     <span class="text-xs px-2 py-0.5 rounded-full bg-[var(--color-accent-muted)]/20 text-[var(--color-accent)] border border-[var(--color-accent-muted)]/30">
-                      Preset
+                      预设
                     </span>
                   )}
                 </div>
@@ -195,7 +195,7 @@ const ProvidersPage: Component = () => {
                   {p.base_url}
                 </div>
                 <div class="text-xs text-[var(--color-fg-muted)] mt-0.5">
-                  Added {new Date(p.created_at).toLocaleDateString()}
+                  添加于 {new Date(p.created_at).toLocaleDateString()}
                 </div>
               </div>
               <div class="flex flex-col gap-2 shrink-0">
@@ -204,13 +204,13 @@ const ProvidersPage: Component = () => {
                   onClick={() => handleTest(p.id, p.name)}
                   disabled={loading()}
                 >
-                  {loading() ? "Testing..." : "Test"}
+                  {loading() ? "测试中..." : "测试"}
                 </button>
                 <button
                   class="text-[var(--color-danger)] hover:text-[var(--color-danger-hover)] text-xs font-medium transition"
                   onClick={() => handleDelete(p.id, p.name)}
                 >
-                  Delete
+                  删除
                 </button>
               </div>
             </div>
@@ -219,7 +219,7 @@ const ProvidersPage: Component = () => {
 
         <Show when={!providers().length && !loading()}>
           <div class="text-center text-[var(--color-fg-muted)] py-12">
-            No providers yet. Add one above.
+            暂无供应商。请在上方添加一个。
           </div>
         </Show>
       </div>
@@ -228,10 +228,10 @@ const ProvidersPage: Component = () => {
         {t => (
           <ConfirmModal
             open={true}
-            title="Delete Provider"
-            message={`Delete "${t().name}" and all its fetched models? This cannot be undone.`}
-            confirmText="Delete"
-            cancelText="Cancel"
+            title="删除供应商"
+            message={`确定要删除"${t().name}"及其所有已获取的模型吗？此操作无法撤销。`}
+            confirmText="删除"
+            cancelText="取消"
             danger
             onConfirm={confirmDelete}
             onCancel={() => setDeleteTarget(null)}
